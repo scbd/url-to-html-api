@@ -113,17 +113,9 @@ async function getPageHtml(url, opts){
         await page.goto(url, pdfOpts);
 
         await page.addStyleTag({content: `
-     #schemaView {
-      display: block !important;
-     }
-      @page {@bottom-right { 
-              content: counter(page);
-          }
-      }
-      .col-xs-12,
-      .col-md-12 {
-          float: none;
-      }"`});
+     
+
+      "`});
 
         let pageContent = await page.content();
 
