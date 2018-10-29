@@ -63,11 +63,11 @@ async function renderPdf(req, res) {
 
     try{
 
-        let pdf = getHtmlPdf(req.body);
+        let pdf = await getHtmlPdf(req.body);
 
         res.status(200);
         res.set('content-type', 'application/pdf');
-        res.send(pdf);
+        res.send(pdf.body);
     }
     catch (err) {
         winston.error(`Error rendering html to pdf: ${err}`);
@@ -112,12 +112,9 @@ async function getPageHtml(url, opts){
         let pdfOpts = {waitUntil : 'networkidle0', timeout:0}
         await page.goto(url, pdfOpts);
 
-        await page.addStyleTag({content: `
-     
-
-      "`});
-
         let pageContent = await page.content();
+
+        winston.info('Content generated');
 
         return pageContent;
 
@@ -143,12 +140,13 @@ async function getHtmlPdf(content, params) {
         });
     }
 
-    return request.post(config.PRINCE_PDF_URL)
+    let pdf = request.post(config.PRINCE_PDF_URL)
                            .query(queryString)
                            .set({'Content-Type': 'text/html'})
                            .parse(binaryParser)
                            .buffer()
                            .send(content);
+    return pdf;
 }
 
 module.exports = {
