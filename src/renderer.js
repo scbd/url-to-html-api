@@ -86,8 +86,8 @@ async function getPageHtml(url, opts){
 
     const page = await browser.newPage();
 
-    page.on('console', (...args) => winston.info('PAGE LOG:', ...args));
-    page.on('console', msg => console.log('PAGE LOG:', msg.text()));
+    page.on('console', (...args) => winston.log('info PAGE LOG:', ...args));
+    // page.on('console', msg => console.log('PAGE LOG:', msg.text()));
 
     await page.evaluate(() => console.log(`url is ${location.href}`));
 
@@ -104,17 +104,20 @@ async function getPageHtml(url, opts){
         height: 1200,
         };
         
-        winston.info('Set browser viewport..');
+        winston.log('info Set browser viewport..');
         await page.setViewport(opts.viewport);
         // await page.emulateMedia('screen');
 
         winston.info(`Goto url ${url} ..`);
+
+        winston.log(`Goto url ${url} ..`)
         let pdfOpts = {waitUntil : 'networkidle0', timeout:0}
         await page.goto(url, pdfOpts);
 
+        winston.log(`goto done..`)
         let pageContent = await page.content();
 
-        winston.info('Content generated');
+        winston.log('Content generated');
 
         return pageContent;
 
@@ -123,7 +126,7 @@ async function getPageHtml(url, opts){
         winston.error(err.stack);
         throw err;
     } finally {
-        winston.info('Closing browser..');
+        winston.log('info Closing browser..');
         if (!config.DEBUG_MODE) {
             await browser.close();
         }
@@ -139,6 +142,7 @@ async function getHtmlPdf(content, params) {
                 queryString[param] = params[param];
         });
     }
+    winston.log('generating pdf...')
 
     let pdf = request.post(config.PRINCE_PDF_URL)
                            .query(queryString)
@@ -146,6 +150,9 @@ async function getHtmlPdf(content, params) {
                            .parse(binaryParser)
                            .buffer()
                            .send(content);
+
+    winston.log('pdf generated...')
+
     return pdf;
 }
 
