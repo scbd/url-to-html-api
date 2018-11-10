@@ -43,12 +43,13 @@ async function renderHtmlandPdf(req, res) {
         }
         let pdf = await getHtmlPdf(content, req.params);
         
-        res.status(200);
-        res.set('content-type'    , pdf.header['content-type']);
-        res.set('content-length'  , pdf.header['content-length']);
-        res.set('date'            , pdf.header['date']);
-        res.set('etag'            , pdf.header['etag']);
-        
+        if(pdf.status == 200){
+            res.set('content-type'    , pdf.header['content-type']);
+            res.set('content-length'  , pdf.header['content-length']);
+            res.set('date'            , pdf.header['date']);
+            res.set('etag'            , pdf.header['etag']);
+        }
+        res.status(pdf.status);
         res.send(pdf.body);
     }
     catch (err) {
@@ -65,9 +66,13 @@ async function renderPdf(req, res) {
 
         let pdf = await getHtmlPdf(req.body);
 
-        res.status(200);
-        res.set('content-type', 'application/pdf');
+        if(pdf.status == 200){
+            res.set('content-type', 'application/pdf');
+        }
+        
+        res.status(pdf.status);
         res.send(pdf.body);
+
     }
     catch (err) {
         winston.error(`Error rendering html to pdf: ${err}`);
@@ -100,13 +105,12 @@ async function getPageHtml(url, opts){
     try {
 
         opts.viewport = {
-        width: 1600,
-        height: 1200,
+            width: 1600,
+            height: 1200,
         };
         
         winston.log('info Set browser viewport..');
         await page.setViewport(opts.viewport);
-        // await page.emulateMedia('screen');
 
         winston.info(`Goto url ${url} ..`);
 
@@ -121,11 +125,13 @@ async function getPageHtml(url, opts){
 
         return pageContent;
 
-    } catch (err) {
+    } 
+    catch (err) {
         winston.error(`Error when rendering page: ${err}`);
         winston.error(err.stack);
         throw err;
-    } finally {
+    } 
+    finally {
         winston.log('info Closing browser..');
         if (!config.DEBUG_MODE) {
             await browser.close();
@@ -145,15 +151,16 @@ async function getHtmlPdf(content, params) {
     winston.log('generating pdf...')
 
     let pdf = request.post(config.PRINCE_PDF_URL)
-                           .query(queryString)
-                           .set({'Content-Type': 'text/html'})
-                           .parse(binaryParser)
-                           .buffer()
-                           .send(content);
+                        .query(queryString)
+                        .set({'Content-Type': 'text/html'})
+                        .parse(binaryParser)
+                        .buffer()
+                        .send(content);
 
     winston.log('pdf generated...')
 
     return pdf;
+    
 }
 
 module.exports = {
