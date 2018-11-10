@@ -34,15 +34,20 @@ async function renderHtmlandPdf(req, res) {
         var opts = {
             ignoreHttpsErrors : true
         }
+        console.log('start html-to-pdf');
         let content = await getPageHtml(req.query.url, opts);
         
+        console.log('content generated');
         var pdfPrams = req.params||{};
 
         if(!pdfPrams.baseurl){
             pdfPrams.baseurl = new url.URL(req.query.url).origin;
         }
+
+        console.log('start pdf');
         let pdf = await getHtmlPdf(content, req.params);
         
+        console.log('pdf generated, sending user pdf');
         if(pdf.status == 200){
             res.set('content-type'    , pdf.header['content-type']);
             res.set('content-length'  , pdf.header['content-length']);
@@ -54,7 +59,7 @@ async function renderHtmlandPdf(req, res) {
     }
     catch (err) {
         winston.error(`Error rendering url to pdf: ${err}`);
-        winston.error(err.stack);
+        
         res.status(500).send('Error rendering url to pdf');
     }
 
@@ -76,7 +81,7 @@ async function renderPdf(req, res) {
     }
     catch (err) {
         winston.error(`Error rendering html to pdf: ${err}`);
-        winston.error(err.stack);
+        
         res.status(500).send('Error rendering html to pdf');
     }
 }
@@ -89,6 +94,7 @@ async function getPageHtml(url, opts){
         sloMo: config.DEBUG_MODE ? 250 : undefined,
     });
 
+    console.log('page object created');
     const page = await browser.newPage();
 
     page.on('console', (...args) => winston.log('info PAGE LOG:', ...args));
@@ -98,7 +104,7 @@ async function getPageHtml(url, opts){
 
     page.on('error', (err) => {
         winston.error(`Error event emitted: ${err}`);
-        winston.error(err.stack);
+        
         browser.close();
     });
 
@@ -109,15 +115,18 @@ async function getPageHtml(url, opts){
             height: 1200,
         };
         
+        console.log('broswer view port set');
         winston.log('info Set browser viewport..');
         await page.setViewport(opts.viewport);
 
         winston.info(`Goto url ${url} ..`);
 
-        winston.log(`Goto url ${url} ..`)
+        
+        console.log(`Goto url ${url} ..`)
         let pdfOpts = {waitUntil : 'networkidle0', timeout:0}
         await page.goto(url, pdfOpts);
 
+        console.log('goto url done');
         winston.log(`goto done..`)
         let pageContent = await page.content();
 
@@ -128,7 +137,7 @@ async function getPageHtml(url, opts){
     } 
     catch (err) {
         winston.error(`Error when rendering page: ${err}`);
-        winston.error(err.stack);
+        
         throw err;
     } 
     finally {
@@ -150,6 +159,7 @@ async function getHtmlPdf(content, params) {
     }
     winston.log('generating pdf...')
 
+    console.log('inside pdf generation');
     let pdf = request.post(config.PRINCE_PDF_URL)
                         .query(queryString)
                         .set({'Content-Type': 'text/html'})
@@ -160,7 +170,7 @@ async function getHtmlPdf(content, params) {
     winston.log('pdf generated...')
 
     return pdf;
-    
+
 }
 
 module.exports = {
