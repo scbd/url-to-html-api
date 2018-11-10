@@ -158,10 +158,11 @@ async function getHtmlPdf(content, params) {
         });
     }
     winston.log('generating pdf...')
-
+    console.log('querystring', queryString);
+    console.log(`prince url ${config.PRINCE_PDF_URL}`)
     console.log('inside pdf generation');
-    let pdf = request.post(config.PRINCE_PDF_URL)
-                        .query(queryString)
+    
+    let pdf = await request.post(config.PRINCE_PDF_URL).query(queryString)
                         .set({'Content-Type': 'text/html'})
                         .parse(binaryParser)
                         .buffer()
