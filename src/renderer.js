@@ -149,6 +149,8 @@ async function getPageHtml(url, opts){
 }
 
 async function getHtmlPdf(content, params) {
+    try{
+
     let queryString = {};
     
     if(params){
@@ -171,6 +173,12 @@ async function getHtmlPdf(content, params) {
     winston.log('pdf generated...')
 
     return pdf;
+    } 
+    catch (err) {
+        winston.error(`error in getHtmlPdf fn: ${err}`);
+        
+        throw err;
+    } 
 
 }
 
