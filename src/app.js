@@ -9,7 +9,7 @@ const config = require('./config');
 
 function createApp() {
   const app = express();
-
+  app.use(morgan('common'));
   if (config.NODE_ENV !== 'production') {
     app.use(morgan('dev'));
   }
@@ -20,7 +20,7 @@ function createApp() {
   };
   winston.info('Using CORS options:', corsOpts);
   app.use(cors(corsOpts));
-
+  
   app.use(bodyParser.text({ limit: '20mb', type: 'text/html' }));
   app.use(bodyParser.json({ limit: '20mb' }));
 
