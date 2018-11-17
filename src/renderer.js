@@ -60,7 +60,7 @@ async function renderHtmlandPdf(req, res) {
                 res.send(pdf.body);
             }
             else if(pdf.body.url){
-                return res.redirect(302, pdf.body.url);
+                return res.status(200).send(pdf.body);
             }
         }
         res.status(pdf.status);
@@ -183,7 +183,7 @@ async function getHtmlPdf(content, params) {
         console.log('inside pdf generation');
         
         let pdf;
-        if(!params.link){
+        if(!params.link || params.link == 'false'){
             pdf = await request.post(config.PRINCE_PDF_URL)
                             .query(queryString)
                             .set({'Content-Type': 'text/html'})
