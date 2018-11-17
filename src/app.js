@@ -21,8 +21,8 @@ function createApp() {
   winston.info('Using CORS options:', corsOpts);
   app.use(cors(corsOpts));
   
-  app.use(bodyParser.text({ limit: '20mb', type: 'text/html' }));
-  app.use(bodyParser.json({ limit: '20mb' }));
+  app.use(bodyParser.text({ limit: '100mb', type: 'text/html' }));
+  app.use(bodyParser.json({ limit: '100mb' }));
 
   app.use(compression({threshold: 100,}));//100kb
 

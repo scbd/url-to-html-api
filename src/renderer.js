@@ -15,6 +15,9 @@ const Whitelist_PDFParams = [
     'pdf-author'  ,
     'pdf-keywords',
     'pdf-creator' ,
+    'link',
+    'attachment-name',
+    'bucket'
 ];
 
 async function renderHtml(req, res) {
@@ -38,24 +41,29 @@ async function renderHtmlandPdf(req, res) {
         let content = await getPageHtml(req.query.url, opts);
         
         console.log('content generated');
-        var pdfPrams = req.params||{};
+        var pdfPrams = req.query||{};
 
         if(!pdfPrams.baseurl){
             pdfPrams.baseurl = new url.URL(req.query.url).origin;
         }
 
         console.log('start pdf');
-        let pdf = await getHtmlPdf(content, req.params);
+        let pdf = await getHtmlPdf(content, pdfPrams);
         
         console.log('pdf generated');
         if(pdf.status == 200){
-            res.set('content-type'    , pdf.header['content-type']);
-            res.set('content-length'  , pdf.header['content-length']);
-            res.set('date'            , pdf.header['date']);
-            res.set('etag'            , pdf.header['etag']);
+            if(pdf.header['content-type'] == 'application/pdf'){
+                res.set('content-type'    , pdf.header['content-type']);
+                res.set('content-length'  , pdf.header['content-length']);
+                res.set('date'            , pdf.header['date']);
+                res.set('etag'            , pdf.header['etag']);
+                res.send(pdf.body);
+            }
+            else if(pdf.body.url){
+                return res.redirect(302, pdf.body.url);
+            }
         }
         res.status(pdf.status);
-        res.send(pdf.body);
 
         console.log('finish sending user pdf');
     }
@@ -74,11 +82,18 @@ async function renderPdf(req, res) {
         let pdf = await getHtmlPdf(req.body);
 
         if(pdf.status == 200){
-            res.set('content-type', 'application/pdf');
+            if(pdf.header['content-type'] == 'application/pdf'){
+                res.set('content-type'    , pdf.header['content-type']);
+                res.set('content-length'  , pdf.header['content-length']);
+                res.set('date'            , pdf.header['date']);
+                res.set('etag'            , pdf.header['etag']);
+                res.send(pdf.body);
+            }
+            else if(pdf.body.url){
+                return res.redirect(302, pdf.body.url);
+            }
         }
-        
         res.status(pdf.status);
-        res.send(pdf.body);
 
     }
     catch (err) {
@@ -153,28 +168,39 @@ async function getPageHtml(url, opts){
 async function getHtmlPdf(content, params) {
     try{
 
-    let queryString = {};
-    
-    if(params){
-        _.each(Whitelist_PDFParams, function(param){
-            if(params[param])
-                queryString[param] = params[param];
-        });
-    }
-    winston.log('generating pdf...')
-    console.log('querystring', queryString);
-    console.log(`prince url ${config.PRINCE_PDF_URL}`)
-    console.log('inside pdf generation');
-    
-    let pdf = await request.post(config.PRINCE_PDF_URL).query(queryString)
-                        .set({'Content-Type': 'text/html'})
-                        .parse(binaryParser)
-                        .buffer()
-                        .send(content);
+        let queryString = {};
+        
+        if(params){
+            _.each(Whitelist_PDFParams, function(param){
+                if(params[param])
+                    queryString[param] = params[param];
+            });
+        }
 
-    winston.log('pdf generated...')
+        winston.log('generating pdf...')
+        console.log('querystring', queryString);
+        console.log(`prince url ${config.PRINCE_PDF_URL}`)
+        console.log('inside pdf generation');
+        
+        let pdf;
+        if(!params.link){
+            pdf = await request.post(config.PRINCE_PDF_URL)
+                            .query(queryString)
+                            .set({'Content-Type': 'text/html'})
+                            .parse(binaryParser)
+                            .buffer()
+                            .send(content);
+        }
+        else{
+            pdf = await request.post(config.PRINCE_PDF_URL)
+                            .query(queryString)
+                            .set({'Content-Type': 'text/html'})
+                            .send(content);
+        }
+        winston.log('pdf generated...')
 
-    return pdf;
+        return pdf;
+
     } 
     catch (err) {
         winston.error(`error in getHtmlPdf fn: ${err}`);
