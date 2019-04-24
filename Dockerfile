@@ -5,6 +5,12 @@ ENV NODE_ENV production
 ENV PORT 7100
 EXPOSE 7100
 
+# https://stackoverflow.com/questions/55386246/w-failed-to-fetch-http-deb-debian-org-debian-dists-jessie-updates-main-binary
+RUN echo "deb [check-valid-until=no] http://archive.debian.org/debian jessie main" > /etc/apt/sources.list.d/jessie.list
+
+RUN sed -i '/deb http:\/\/deb.debian.org\/debian jessie-updates main/d' /etc/apt/sources.list
+
+
 RUN apt-get update \
     && apt-get install -yq \
         gconf-service libasound2 libatk1.0-0 libc6 \
