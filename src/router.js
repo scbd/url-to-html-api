@@ -9,7 +9,7 @@ function createRouter() {
   const router = express.Router();
 
   router.get  ('/api/render-html',  validate,  asyncwrap(renderer.renderHtml));
-  router.get  ('/api/render-pdf',   validate,  asyncwrap(renderer.renderHtmlandPdf));
+  router.get  ('/api/render-pdf',   validate,  asyncwrap(renderer.renderUrlToPdf));
   router.post ('/api/render-pdf',   validate,  asyncwrap(renderer.renderPdf));
 
   return router;

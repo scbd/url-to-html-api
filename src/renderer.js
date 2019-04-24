@@ -22,7 +22,7 @@ const Whitelist_PDFParams = [
 
 async function renderHtml(req, res) {
     try{
-        let content = await getPageHtml(req.query.url, {});
+        let content = await renderUrlHtml(req.query.url, {});
     
         res.status(200).send(content);
     }
@@ -32,13 +32,13 @@ async function renderHtml(req, res) {
 
 }
 
-async function renderHtmlandPdf(req, res) {
+async function renderUrlToPdf(req, res) {
     try{
         var opts = {
             ignoreHttpsErrors : true
         }
         console.log('start html-to-pdf');
-        let content = await getPageHtml(req.query.url, opts);
+        let content = await renderUrlHtml(req.query.url, opts);
         
         console.log('content generated');
         var pdfPrams = req.query||{};
@@ -48,7 +48,7 @@ async function renderHtmlandPdf(req, res) {
         }
 
         console.log('start pdf');
-        let pdf = await getHtmlPdf(content, pdfPrams);
+        let pdf = await convertHtmlToPdf(content, pdfPrams);
         
         console.log('pdf generated');
         if(pdf.status == 200){
@@ -79,7 +79,7 @@ async function renderPdf(req, res) {
 
     try{
 
-        let pdf = await getHtmlPdf(req.body);
+        let pdf = await convertHtmlToPdf(req.body);
 
         if(pdf.status == 200){
             if(pdf.header['content-type'] == 'application/pdf'){
@@ -103,7 +103,7 @@ async function renderPdf(req, res) {
     }
 }
 
-async function getPageHtml(url, opts){
+async function renderUrlHtml(url, opts){
     const browser = await puppeteer.launch({
         headless: !config.DEBUG_MODE,
         ignoreHTTPSErrors: opts.ignoreHttpsErrors,
@@ -165,7 +165,7 @@ async function getPageHtml(url, opts){
     }
 }
 
-async function getHtmlPdf(content, params) {
+async function convertHtmlToPdf(content, params) {
     try{
 
         let queryString = {};
@@ -186,7 +186,7 @@ async function getHtmlPdf(content, params) {
         if(!params.link || params.link == 'false'){
             pdf = await request.post(config.PRINCE_PDF_URL)
                             .query(queryString)
-                            .set({'Content-Type': 'text/html'})
+                            .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .parse(binaryParser)
                             .buffer()
                             .send(content);
@@ -194,7 +194,7 @@ async function getHtmlPdf(content, params) {
         else{
             pdf = await request.post(config.PRINCE_PDF_URL)
                             .query(queryString)
-                            .set({'Content-Type': 'text/html'})
+                            .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .send(content);
         }
         winston.log('pdf generated...')
@@ -203,7 +203,7 @@ async function getHtmlPdf(content, params) {
 
     } 
     catch (err) {
-        winston.error(`error in getHtmlPdf fn: ${err}`);
+        winston.error(`error in convertHtmlToPdf fn: ${err}`);
         
         throw err;
     } 
@@ -212,6 +212,6 @@ async function getHtmlPdf(content, params) {
 
 module.exports = {
     renderHtml,
-    renderHtmlandPdf,
+    renderUrlToPdf,
     renderPdf,
 }
