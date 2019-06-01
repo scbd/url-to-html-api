@@ -24,10 +24,10 @@ async function renderHtml(req, res) {
     try{
         let content = await renderUrlHtml(req.query.url, {});
     
-        res.status(200).send(content);
+        return res.status(200).send(content);
     }
     catch (err) {
-        res.status(500).send('Error when rendering page');
+        return res.status(500).send('Error when rendering page');
     }
 
 }
@@ -52,25 +52,27 @@ async function renderUrlToPdf(req, res) {
         
         console.log('pdf generated');
         if(pdf.status == 200){
+            console.log('200 from pdf service, finish sending user pdf');
             if(pdf.header['content-type'] == 'application/pdf'){
                 res.set('content-type'    , pdf.header['content-type']);
                 res.set('content-length'  , pdf.header['content-length']);
                 res.set('date'            , pdf.header['date']);
                 res.set('etag'            , pdf.header['etag']);
-                res.send(pdf.body);
+
+                return res.status(200).send(pdf.body);
             }
             else if(pdf.body.url){
                 return res.status(200).send(pdf.body);
             }
         }
-        res.status(pdf.status);
+        console.log(`Non 200 from pdf service, ${pdf.status}`);
+        return res.status(pdf.status);
 
-        console.log('finish sending user pdf');
     }
     catch (err) {
         console.error(`Error rendering url to pdf: ${err}`);
         
-        res.status(400).send('Error rendering url to pdf');
+        return res.status(400).send('Error rendering url to pdf');
     }
 
 }
@@ -87,19 +89,21 @@ async function renderPdf(req, res) {
                 res.set('content-length'  , pdf.header['content-length']);
                 res.set('date'            , pdf.header['date']);
                 res.set('etag'            , pdf.header['etag']);
-                res.send(pdf.body);
+
+                return res.status(200).send(pdf.body);
             }
             else if(pdf.body.url){
                 return res.redirect(302, pdf.body.url);
             }
         }
-        res.status(pdf.status);
+
+        return res.status(pdf.status);
 
     }
     catch (err) {
         console.error(`Error rendering html to pdf: ${err}`);
         
-        res.status(500).send('Error rendering html to pdf');
+        return res.status(500).send('Error rendering html to pdf');
     }
 }
 
