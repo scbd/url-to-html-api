@@ -7,6 +7,14 @@ const url       = require('url');
 
 const binaryParser = require('superagent-binary-parser');
 
+const Agent = require('agentkeepalive');
+const keepaliveAgent = new Agent({
+  maxSockets: 100,
+  maxFreeSockets: 10,
+  timeout: 90000, // active socket keepalive for 90 seconds
+  freeSocketTimeout: 30000, // free socket keepalive for 30 seconds
+});
+
 const Whitelist_PDFParams = [
     'baseurl'     ,
     'page-margin' ,
@@ -188,15 +196,19 @@ async function convertHtmlToPdf(content, params) {
         
         let pdf;
         if(!params.link || params.link == 'false'){
+            console.log('pdf request, generating')
             pdf = await request.post(config.PRINCE_PDF_URL)
+                            .agent(keepaliveAgent)
                             .query(queryString)
                             .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .parse(binaryParser)
                             .buffer()
                             .send(content);
         }
-        else{
+        else{ 
+            console.log('pdf link request, generating')
             pdf = await request.post(config.PRINCE_PDF_URL)
+                            .agent(keepaliveAgent)
                             .query(queryString)
                             .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .send(content);
