@@ -68,7 +68,7 @@ async function renderUrlToPdf(req, res) {
         console.log('finish sending user pdf');
     }
     catch (err) {
-        winston.error(`Error rendering url to pdf: ${err}`);
+        console.error(`Error rendering url to pdf: ${err}`);
         
         res.status(400).send('Error rendering url to pdf');
     }
@@ -97,7 +97,7 @@ async function renderPdf(req, res) {
 
     }
     catch (err) {
-        winston.error(`Error rendering html to pdf: ${err}`);
+        console.error(`Error rendering html to pdf: ${err}`);
         
         res.status(500).send('Error rendering html to pdf');
     }
@@ -114,13 +114,13 @@ async function renderUrlHtml(url, opts){
     console.log('page object created');
     const page = await browser.newPage();
 
-    page.on('console', (...args) => winston.log('info PAGE LOG:', ...args));
+    page.on('console', (...args) => console.log('info PAGE LOG:', ...args));
     // page.on('console', msg => console.log('PAGE LOG:', msg.text()));
 
     await page.evaluate(() => console.log(`url is ${location.href}`));
 
     page.on('error', (err) => {
-        winston.error(`Error event emitted: ${err}`);
+        console.error(`Error event emitted: ${err}`);
         
         browser.close();
     });
@@ -133,10 +133,10 @@ async function renderUrlHtml(url, opts){
         };
         
         console.log('broswer view port set');
-        winston.log('info Set browser viewport..');
+        console.log('info Set browser viewport..');
         await page.setViewport(opts.viewport);
 
-        winston.info(`Goto url ${url} ..`);
+        console.info(`Goto url ${url} ..`);
 
         
         console.log(`Goto url ${url} ..`)
@@ -144,21 +144,21 @@ async function renderUrlHtml(url, opts){
         await page.goto(url, pdfOpts);
 
         console.log('goto url done');
-        winston.log(`goto done..`)
+        console.log(`goto done..`)
         let pageContent = await page.content();
 
-        winston.log('Content generated');
+        console.log('Content generated');
 
         return pageContent;
 
     } 
     catch (err) {
-        winston.error(`Error when rendering page: ${err}`);
+        console.error(`Error when rendering page: ${err}`);
         
         throw err;
     } 
     finally {
-        winston.log('info Closing browser..');
+        console.log('info Closing browser..');
         if (!config.DEBUG_MODE) {
             await browser.close();
         }
@@ -177,7 +177,7 @@ async function convertHtmlToPdf(content, params) {
             });
         }
 
-        winston.log('generating pdf...')
+        console.log('generating pdf...')
         console.log('querystring', queryString);
         console.log(`prince url ${config.PRINCE_PDF_URL}`)
         console.log('inside pdf generation');
@@ -197,13 +197,13 @@ async function convertHtmlToPdf(content, params) {
                             .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .send(content);
         }
-        winston.log('pdf generated...')
+        console.log('pdf generated...')
 
         return pdf;
 
     } 
     catch (err) {
-        winston.error(`error in convertHtmlToPdf fn: ${err}`);
+        console.error(`error in convertHtmlToPdf fn: ${err}`);
         
         throw err;
     } 
