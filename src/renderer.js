@@ -185,10 +185,6 @@ async function convertHtmlToPdf(content, params) {
         let pdf;
         if(!params.link || params.link == 'false'){
             pdf = await request.post(config.PRINCE_PDF_URL)
-                            .timeout({
-                                response: 5*60*1000,    // Wait 5 minutes for the server to start sending,
-                                deadline: 1*60*1000     // but allow 1 minute for the file to finish loading.
-                            })
                             .query(queryString)
                             .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .parse(binaryParser)
@@ -197,10 +193,6 @@ async function convertHtmlToPdf(content, params) {
         }
         else{
             pdf = await request.post(config.PRINCE_PDF_URL)
-                            .timeout({
-                                response: 5*60*1000,    // Wait 5 minutes for the server to start sending,
-                                deadline: 1*60*1000     // but allow 1 minute for the file to finish loading.
-                            })
                             .query(queryString)
                             .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .send(content);
