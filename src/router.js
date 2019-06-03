@@ -8,16 +8,20 @@ function createRouter() {
 
   const router = express.Router();
 
-  router.get  ('/api/render-html',  validate,  asyncwrap(renderer.renderHtml));
-  router.get  ('/api/render-pdf',   validate,  asyncwrap(renderer.renderUrlToPdf));
-  router.post ('/api/render-pdf',   validate,  asyncwrap(renderer.renderPdf));
+  router.get  ('/api/render-html',  setTimeout, validate,  asyncwrap(renderer.renderHtml));
+  router.get  ('/api/render-pdf',   setTimeout, validate,  asyncwrap(renderer.renderUrlToPdf));
+  router.post ('/api/render-pdf',   setTimeout, validate,  asyncwrap(renderer.renderPdf));
 
   return router;
 
-  function validate(req, res, next){
-
+  function setTimeout(req, res, next){
+    req.setTimeout(15*60*1000);
     next();
 
+  }
+
+  function validate(req, res, next){
+    next();
   }
 }
 
