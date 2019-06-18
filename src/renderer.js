@@ -22,8 +22,9 @@ const Whitelist_PDFParams = [
 
 async function renderHtml(req, res) {
     try{
-        let content = await renderUrlHtml(req.query.url, {});
-    
+        let url = req.query.url.replace(/^\//, '')
+        let content = await renderUrlHtml(url, {});
+                
         res.status(200).send(content);
     }
     catch (err) {
@@ -149,7 +150,7 @@ async function renderUrlHtml(url, opts){
 
         winston.log('Content generated');
 
-        return pageContent;
+        return removeScriptTags(pageContent);
 
     } 
     catch (err) {
@@ -210,6 +211,24 @@ async function convertHtmlToPdf(content, params) {
 
 }
 
+function removeScriptTags(content){
+
+    // code from https://github.com/prerender/prerender/blob/master/lib/plugins/removeScriptTags.js
+    var matches = content.toString().match(/<script(?:.*?)>(?:[\S\s]*?)<\/script>/gi);
+    for (let i = 0; matches && i < matches.length; i++) {
+        if (matches[i].indexOf('application/ld+json') === -1) {
+            content = content.toString().replace(matches[i], '');
+        }
+    }
+
+    //<link rel="import" src=""> tags can contain script tags. Since they are already rendered, let's remove them
+    matches = content.toString().match(/<link[^>]+?rel="import"[^>]*?>/i);
+    for (let i = 0; matches && i < matches.length; i++) {
+        content = content.toString().replace(matches[i], '');
+    }
+
+    return content;
+}
 module.exports = {
     renderHtml,
     renderUrlToPdf,
