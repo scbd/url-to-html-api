@@ -108,7 +108,7 @@ async function renderUrlHtml(url, opts){
     const browser = await puppeteer.launch({
         headless: !config.DEBUG_MODE,
         ignoreHTTPSErrors: opts.ignoreHttpsErrors,
-        args: ['--disable-gpu', '--no-sandbox', '--disable-setuid-sandbox'],
+        args: ['--disable-gpu', '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
         sloMo: config.DEBUG_MODE ? 250 : undefined,
     });
 
