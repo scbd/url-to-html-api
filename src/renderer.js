@@ -38,20 +38,20 @@ async function renderUrlToPdf(req, res) {
         var opts = {
             ignoreHttpsErrors : true
         }
-        console.log('start html-to-pdf');
+        winston.info('start html-to-pdf');
         let content = await renderUrlHtml(req.query.url, opts);
         
-        console.log('content generated');
+        winston.info('content generated');
         var pdfPrams = req.query||{};
 
         if(!pdfPrams.baseurl){
             pdfPrams.baseurl = new url.URL(req.query.url).origin;
         }
 
-        console.log('start pdf');
+        winston.info('start pdf');
         let pdf = await convertHtmlToPdf(content, pdfPrams);
         
-        console.log('pdf generated');
+        winston.info('pdf generated');
         if(pdf.status == 200){
             if(pdf.header['content-type'] == 'application/pdf'){
                 res.set('content-type'    , pdf.header['content-type']);
@@ -66,7 +66,7 @@ async function renderUrlToPdf(req, res) {
         }
         res.status(pdf.status);
 
-        console.log('finish sending user pdf');
+        winston.info('finish sending user pdf');
     }
     catch (err) {
         winston.error(`Error rendering url to pdf: ${err}`);
@@ -112,13 +112,17 @@ async function renderUrlHtml(url, opts){
         sloMo: config.DEBUG_MODE ? 250 : undefined,
     });
 
-    console.log('page object created');
+    winston.info('page object created');
     const page = await browser.newPage();
 
-    page.on('console', (...args) => winston.log('info PAGE LOG:', ...args));
-    // page.on('console', msg => console.log('PAGE LOG:', msg.text()));
+    page.on('console', (...args) => {
+        //console.info('info PAGE LOG:', ...args)
+    });
+    // page.on('console', msg => winston.info('PAGE LOG:', msg.text()));
 
-    await page.evaluate(() => console.log(`url is ${location.href}`));
+    await page.evaluate(() => {
+        //console.info(`url is ${location.href}`)
+    });
 
     page.on('error', (err) => {
         winston.error(`Error event emitted: ${err}`);
@@ -133,22 +137,20 @@ async function renderUrlHtml(url, opts){
             height: 1200,
         };
         
-        console.log('broswer view port set');
-        winston.log('info Set browser viewport..');
+        winston.info('info Set browser viewport..');
         await page.setViewport(opts.viewport);
 
         winston.info(`Goto url ${url} ..`);
 
         
-        console.log(`Goto url ${url} ..`)
+        winston.info(`Goto url ${url} ..`)
         let pdfOpts = {waitUntil : 'networkidle0', timeout:0}
         await page.goto(url, pdfOpts);
 
-        console.log('goto url done');
-        winston.log(`goto done..`)
+        winston.info('goto url done');
         let pageContent = await page.content();
 
-        winston.log('Content generated');
+        winston.info('Content generated');
 
         return removeScriptTags(pageContent);
 
@@ -159,7 +161,7 @@ async function renderUrlHtml(url, opts){
         throw err;
     } 
     finally {
-        winston.log('info Closing browser..');
+        winston.info('info Closing browser..');
         if (!config.DEBUG_MODE) {
             await browser.close();
         }
@@ -178,10 +180,10 @@ async function convertHtmlToPdf(content, params) {
             });
         }
 
-        winston.log('generating pdf...')
-        console.log('querystring', queryString);
-        console.log(`prince url ${config.PRINCE_PDF_URL}`)
-        console.log('inside pdf generation');
+        winston.info('generating pdf...')
+        winston.info('querystring', queryString);
+        winston.info(`prince url ${config.PRINCE_PDF_URL}`)
+        winston.info('inside pdf generation');
         
         let pdf;
         if(!params.link || params.link == 'false'){
@@ -198,7 +200,7 @@ async function convertHtmlToPdf(content, params) {
                             .set({'Content-Type': 'text/html; charset=UTF-8'})
                             .send(content);
         }
-        winston.log('pdf generated...')
+        winston.info('pdf generated...')
 
         return pdf;
 
