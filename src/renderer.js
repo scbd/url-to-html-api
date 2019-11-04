@@ -1,5 +1,4 @@
-﻿const puppeteer = require('puppeteer');
-const _ = require('lodash');
+﻿const _ = require('lodash');
 const config = require('./config');
 const winston = require('./logger')(__filename);
 const request = require('superagent');
@@ -104,68 +103,26 @@ async function renderPdf(req, res) {
     }
 }
 
+
 async function renderUrlHtml(url, opts){
-    const browser = await puppeteer.launch({
-        headless: !config.DEBUG_MODE,
-        ignoreHTTPSErrors: opts.ignoreHttpsErrors,
-        args: ['--disable-gpu', '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-        sloMo: config.DEBUG_MODE ? 250 : undefined,
-    });
-
-    winston.info('page object created');
-    const page = await browser.newPage();
-
-    page.on('console', (...args) => {
-        //console.info('info PAGE LOG:', ...args)
-    });
-    // page.on('console', msg => winston.info('PAGE LOG:', msg.text()));
-
-    await page.evaluate(() => {
-        //console.info(`url is ${location.href}`)
-    });
-
-    page.on('error', (err) => {
-        winston.error(`Error event emitted: ${err}`);
-        
-        browser.close();
-    });
-
+    
     try {
-
-        opts.viewport = {
-            width: 1600,
-            height: 1200,
-        };
-        
-        winston.info('info Set browser viewport..');
-        await page.setViewport(opts.viewport);
-
-        winston.info(`Goto url ${url} ..`);
-
-        
-        winston.info(`Goto url ${url} ..`)
-        let pdfOpts = {waitUntil : 'networkidle0', timeout:0}
-        await page.goto(url, pdfOpts);
-
-        winston.info('goto url done');
-        let pageContent = await page.content();
-
-        winston.info('Content generated');
-
-        return removeScriptTags(pageContent);
+       
+        let pageContent = await request.get(config.URL_TO_HTML_URL)
+                                        .query({url:(url)})
+                                        .accept('text/html; charset=UTF-8')
+                                        .buffer(true)
+                                        .parse(request.parse.text)
+                                        .then(page=>{
+                                            return page.text;
+                                        });
+        return pageContent;
 
     } 
     catch (err) {
-        winston.error(`Error when rendering page: ${err}`);
-        
+        winston.error(`Error when getting page html: ${err}`);
         throw err;
     } 
-    finally {
-        winston.info('info Closing browser..');
-        if (!config.DEBUG_MODE) {
-            await browser.close();
-        }
-    }
 }
 
 async function convertHtmlToPdf(content, params) {

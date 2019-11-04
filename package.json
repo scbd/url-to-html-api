@@ -1,7 +1,7 @@
 {
   "name": "url-to-html-api",
   "version": "1.0.0",
-  "description": "url to html api using puppeteer",
+  "description": "url to html api ",
   "main": "src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -17,7 +17,6 @@
     "joi": "^11.1.1",
     "lodash": "^4.17.11",
     "morgan": "^1.9.1",
-    "puppeteer": "^1.17.0",
     "superagent": "5.0.5",
     "superagent-binary-parser": "^1.0.1",
     "winston": "^2.3.1"

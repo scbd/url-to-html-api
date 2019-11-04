@@ -10,6 +10,11 @@ const config = require('./config');
 function createApp() {
   const app = express();
   app.use(morgan('common'));
+
+  if(!config.URL_TO_HTML_URL){
+    throw Error("URL_TO_HTML_URL is missing, exiting..")
+  }
+
   if (config.NODE_ENV !== 'production') {
     app.use(morgan('dev'));
   }
