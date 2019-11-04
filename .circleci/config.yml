@@ -15,7 +15,7 @@ _run:
   testImage: &testImage
     name: Test docker image 
     command:  |
-      docker run --name url2html -d -p 7100:7100 output;sleep 10;
+      docker run --env URL_TO_HTML_URL="http://test.cbd.int" --name url2html -d -p 7100:7100 output;sleep 10;
       docker exec url2html curl --retry 10 --retry-delay 5 -v http://localhost:7100
 
 jobs:
