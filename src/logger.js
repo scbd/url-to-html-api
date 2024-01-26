@@ -3,7 +3,7 @@ const winston = require('winston');
 const _ = require('lodash');
 const config = require('./config');
 
-const COLORIZE = config.NODE_ENV === 'development';
+const COLORIZE = true;//config.NODE_ENV === 'development';
 
 function createLogger(filePath) {
   const fileName = path.basename(filePath);
