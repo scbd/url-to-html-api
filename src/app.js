@@ -10,6 +10,7 @@ const config = require('./config');
 function createApp() {
   const app = express();
   app.use(morgan('common'));
+
   if (config.NODE_ENV !== 'production') {
     app.use(morgan('dev'));
   }

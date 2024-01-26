@@ -1,233 +1,102 @@
-﻿const puppeteer = require('puppeteer');
-const _ = require('lodash');
-const config = require('./config');
-const winston = require('./logger')(__filename);
-const request = require('superagent');
+
+const prerenderNode = require('prerender-node');
 const url       = require('url');
-
-const binaryParser = require('superagent-binary-parser');
-
-const Agent = require('agentkeepalive');
-const keepaliveAgent = new Agent({
-  maxSockets: 100,
-  maxFreeSockets: 10,
-  timeout: 90000, // active socket keepalive for 90 seconds
-  freeSocketTimeout: 30000, // free socket keepalive for 30 seconds
-});
-
-const Whitelist_PDFParams = [
-    'baseurl'     ,
-    'page-margin' ,
-    'pdf-title'   ,
-    'pdf-subject' ,
-    'pdf-author'  ,
-    'pdf-keywords',
-    'pdf-creator' ,
-    'link',
-    'attachment-name',
-    'bucket'
-];
+const querySting = require('querystring');
+const winston = require('./logger')(__filename);
+const config = require('./config');
 
 async function renderHtml(req, res) {
-    try{
-        let content = await renderUrlHtml(req.query.url, {});
     
-        return res.status(200).send(content);
-    }
-    catch (err) {
-        return res.status(500).send('Error when rendering page');
-    }
-
-}
-
-async function renderUrlToPdf(req, res) {
-    try{
-        var opts = {
-            ignoreHttpsErrors : true
-        }
-        console.log('start html-to-pdf');
-        let content = await renderUrlHtml(req.query.url, opts);
-        
-        console.log('content generated');
-        var pdfPrams = req.query||{};
-
-        if(!pdfPrams.baseurl){
-            pdfPrams.baseurl = new url.URL(req.query.url).origin;
-        }
-
-        console.log('start pdf');
-        let pdf = await convertHtmlToPdf(content, pdfPrams);
-        
-        console.log('pdf generated');
-        if(pdf.status == 200){
-            console.log('200 from pdf service, finish sending user pdf');
-            if(pdf.header['content-type'] == 'application/pdf'){
-                res.set('content-type'    , pdf.header['content-type']);
-                res.set('content-length'  , pdf.header['content-length']);
-                res.set('date'            , pdf.header['date']);
-                res.set('etag'            , pdf.header['etag']);
-
-                return res.status(200).send(pdf.body);
-            }
-            else if(pdf.body.url){
-                return res.status(200).send(pdf.body);
-            }
-        }
-        console.log(`Non 200 from pdf service, ${pdf.status}`);
-        return res.status(pdf.status);
-
-    }
-    catch (err) {
-        console.error(`Error rendering url to pdf: ${err}`);
-        
-        return res.status(400).send('Error rendering url to pdf');
-    }
-
-}
-
-async function renderPdf(req, res) {
+    let clientUrl = req.query.url.replace(/^\//, '');
 
     try{
+        winston.log(`Rendering url: ${clientUrl}`)
 
-        let pdf = await convertHtmlToPdf(req.body);
+        let htmlUrl = new url.URL(clientUrl);
+        let search  = querySting.parse((htmlUrl.search||'').replace(/^\?/, ''));
 
-        if(pdf.status == 200){
-            if(pdf.header['content-type'] == 'application/pdf'){
-                res.set('content-type'    , pdf.header['content-type']);
-                res.set('content-length'  , pdf.header['content-length']);
-                res.set('date'            , pdf.header['date']);
-                res.set('etag'            , pdf.header['etag']);
-
-                return res.status(200).send(pdf.body);
-            }
-            else if(pdf.body.url){
-                return res.redirect(302, pdf.body.url);
-            }
+        if(!isCBDDomain(htmlUrl.hostname)){
+            winston.log(`Only CBD domain urls can be rendered ${htmlUrl.hostname}`)
+            return {
+                'statusCode': 400,
+                'body': 'Only CBD domain urls can be rendered'
+            };
         }
+        winston.log('Domain validation passed');
+        
+        prerenderNode
+            .set('prerenderServiceUrl', config.PRERENDER_URL)
+            .set('afterRender', function(err, req, prerender_res) {
+                if (err) {
+                    return { cancelRender: true };
+                }
+                
+                prerender_res.body = removeScriptTags(prerender_res.body);
+                prerender_res.body = updateBaseUrl(prerender_res.body, search.baseUrl||'');
+                
+            });;
 
-        return res.status(pdf.status);
-
+        return prerenderNode(req, res);                
     }
     catch (err) {
-        console.error(`Error rendering html to pdf: ${err}`);
-        
-        return res.status(500).send('Error rendering html to pdf');
+        res.status(500).send(`Error when rendering page ${clientUrl}`);
     }
+
 }
 
-async function renderUrlHtml(url, opts){
-    const browser = await puppeteer.launch({
-        headless: !config.DEBUG_MODE,
-        ignoreHTTPSErrors: opts.ignoreHttpsErrors,
-        args: ['--disable-gpu', '--no-sandbox', '--disable-setuid-sandbox'],
-        sloMo: config.DEBUG_MODE ? 250 : undefined,
-    });
 
-    console.log('page object created');
-    const page = await browser.newPage();
+function removeScriptTags(content){
 
-    page.on('console', (...args) => console.log('info PAGE LOG:', ...args));
-    // page.on('console', msg => console.log('PAGE LOG:', msg.text()));
-
-    await page.evaluate(() => console.log(`url is ${location.href}`));
-
-    page.on('error', (err) => {
-        console.error(`Error event emitted: ${err}`);
-        
-        browser.close();
-    });
-
-    try {
-
-        opts.viewport = {
-            width: 1600,
-            height: 1200,
-        };
-        
-        console.log('broswer view port set');
-        console.log('info Set browser viewport..');
-        await page.setViewport(opts.viewport);
-
-        console.info(`Goto url ${url} ..`);
-
-        
-        console.log(`Goto url ${url} ..`)
-        let pdfOpts = {waitUntil : 'networkidle0', timeout:0}
-        await page.goto(url, pdfOpts);
-
-        console.log('goto url done');
-        console.log(`goto done..`)
-        let pageContent = await page.content();
-
-        console.log('Content generated');
-
-        return pageContent;
-
-    } 
-    catch (err) {
-        console.error(`Error when rendering page: ${err}`);
-        
-        throw err;
-    } 
-    finally {
-        console.log('info Closing browser..');
-        if (!config.DEBUG_MODE) {
-            await browser.close();
+    // code from https://github.com/prerender/prerender/blob/master/lib/plugins/removeScriptTags.js
+    var matches = content.toString().match(/<script(?:.*?)>(?:[\S\s]*?)<\/script>/gi);
+    for (let i = 0; matches && i < matches.length; i++) {
+        if (matches[i].indexOf('application/ld+json') === -1) {
+            content = content.toString().replace(matches[i], '');
         }
     }
+
+    //remove comments
+    // content = content.replace(/(<!--.*?-->)|(<!--[\w\W\n\s]+?-->)/gm, '')
+    
+    return content;
 }
 
-async function convertHtmlToPdf(content, params) {
-    try{
+function updateBaseUrl(content, baseUrl){
 
-        let queryString = {};
+    let matches = content.toString().match(/<link[^>]+?href="(\/app\/.*)"[^>]*?>/gi);
+    for (let i = 0; matches && i < matches.length; i++) {
         
-        if(params){
-            _.each(Whitelist_PDFParams, function(param){
-                if(params[param])
-                    queryString[param] = params[param];
-            });
-        }
+        content = content.toString().replace(matches[i], matches[i].replace('href="/app', `href="${baseUrl}/app`));
+    }
 
-        console.log('generating pdf...')
-        console.log('querystring', queryString);
-        console.log(`prince url ${config.PRINCE_PDF_URL}`)
-        console.log('inside pdf generation');
+    matches = content.toString().match(/<img[^>]+?src="(\/app\/.*)"[^>]*?>/gi);
+    for (let i = 0; matches && i < matches.length; i++) {
         
-        let pdf;
-        if(!params.link || params.link == 'false'){
-            console.log('pdf request, generating')
-            pdf = await request.post(config.PRINCE_PDF_URL)
-                            .agent(keepaliveAgent)
-                            .query(queryString)
-                            .set({'Content-Type': 'text/html; charset=UTF-8'})
-                            .parse(binaryParser)
-                            .buffer()
-                            .send(content);
-        }
-        else{ 
-            console.log('pdf link request, generating')
-            pdf = await request.post(config.PRINCE_PDF_URL)
-                            .agent(keepaliveAgent)
-                            .query(queryString)
-                            .set({'Content-Type': 'text/html; charset=UTF-8'})
-                            .send(content);
-        }
-        console.log('pdf generated...')
+        content = content.toString().replace(matches[i], matches[i].replace('src="/app', `src="${baseUrl}/app`));
+    }
 
-        return pdf;
-
-    } 
-    catch (err) {
-        console.error(`error in convertHtmlToPdf fn: ${err}`);
-        
-        throw err;
-    } 
-
+    return content;
 }
+
+function isCBDDomain(hostname){
+   
+    return /cbd\.int$/.test(hostname) || 
+           /cbddev\.xyz$/.test(hostname)
+}   
+
+function setPrerenderHeader(req, res, next){
+
+		req.prerender.tab.Network.setExtraHTTPHeaders({
+			headers: {
+				'x-is-prerender': 'true'
+			}
+		});
+
+		next();
+}
+
 
 module.exports = {
     renderHtml,
-    renderUrlToPdf,
-    renderPdf,
+    setPrerenderHeader
 }
