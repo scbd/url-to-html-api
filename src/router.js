@@ -7,10 +7,9 @@ function asyncwrap(fn) { return function (req, res, next) { fn(req, res, next).c
 function createRouter() {
 
   const router = express.Router();
+  initPrerenderServer();
 
   router.get  ('/api/render-html',  setTimeout, validate,  asyncwrap(renderer.renderHtml));
-  router.get  ('/api/render-pdf',   setTimeout, validate,  asyncwrap(renderer.renderUrlToPdf));
-  router.post ('/api/render-pdf',   setTimeout, validate,  asyncwrap(renderer.renderPdf));
 
   return router;
 
@@ -22,6 +21,17 @@ function createRouter() {
 
   function validate(req, res, next){
     next();
+  }
+
+  function initPrerenderServer(){
+
+    const prerender = require('prerender');
+    const server = prerender({
+      port:3000,
+      // chromeLocation: '/usr/bin/google-chrome-stable',
+      chromeFlags: ['--no-sandbox','--headless', '--disable-gpu', '--remote-debugging-port=9222', '--hide-scrollbars','--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    server.start();
   }
 }
 
