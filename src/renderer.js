@@ -32,7 +32,7 @@ async function renderHtml(req, res) {
                 }
                 
                 prerender_res.body = removeScriptTags(prerender_res.body);
-                prerender_res.body = updateBaseUrl(prerender_res.body, search.baseUrl||'');
+                prerender_res.body = updateBaseUrl(prerender_res.body, search.baseUrl||htmlUrl.origin||'');
                 
             });;
 
