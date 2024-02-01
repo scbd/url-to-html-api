@@ -1,0 +1,43 @@
+
+version: '3'
+
+services:
+
+  manage:
+    image: portainer/portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer-data:/data
+    networks:
+      - prerender
+
+  urlToHtml:
+    image: scbd/url-to-html-api:dev
+    ports:
+      - 7100:7100
+    restart: always
+    networks:
+      - prerender
+    deploy:
+      mode: replicated
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1250M
+        reservations:
+          cpus: '1'
+          memory: 1250M
+
+networks:
+  prerender:
+    external: true
+  proxy:
+    external: true
+
+volumes:
+  portainer-data:
+  nginx-data:
+        

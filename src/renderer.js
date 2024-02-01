@@ -40,6 +40,7 @@ async function renderHtml(req, res) {
     }
     catch (err) {
         res.status(500).send(`Error when rendering page ${clientUrl}`);
+        console.log(err);
     }
 
 }
