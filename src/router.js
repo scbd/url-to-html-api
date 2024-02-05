@@ -28,7 +28,7 @@ function createRouter() {
     const prerender = require('prerender');
     const server = prerender({
       port:3000,
-      // chromeLocation: '/usr/bin/google-chrome-stable',
+      pageLoadTimeout: 10 * 1000,
       chromeFlags: ['--no-sandbox','--headless', '--disable-gpu', '--remote-debugging-port=9222', '--hide-scrollbars','--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
     server.start();
