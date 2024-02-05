@@ -64,7 +64,7 @@ function removeScriptTags(content){
 
 function updateBaseUrl(content, baseUrl){
 
-    let matches = content.toString().match(/<link[^>]+?href="(\/app\/.*)"[^>]*?>/gi);
+    let matches = content.toString().match(/href="(\/app\/.*)"[^>]*?>/gi);
     for (let i = 0; matches && i < matches.length; i++) {
         
         content = content.toString().replace(matches[i], matches[i].replace('href="/app', `href="${baseUrl}/app`));
