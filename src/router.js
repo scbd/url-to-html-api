@@ -32,7 +32,7 @@ function createRouter() {
     });
 
     server.use(prerender.addMetaTags())
-    server.use(prerender.blockResources())
+    // server.use(prerender.blockResources())
     server.use(prerender.browserForceRestart())
     server.use(prerender.httpHeaders())
     server.use(prerender.removeScriptTags())
