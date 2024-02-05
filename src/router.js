@@ -31,7 +31,17 @@ function createRouter() {
       pageLoadTimeout: 10 * 1000,
       chromeFlags: ['--no-sandbox','--headless', '--disable-gpu', '--remote-debugging-port=9222', '--hide-scrollbars','--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
+
+    server.use(prerender.addMetaTags())
+    server.use(prerender.blockResources())
+    server.use(prerender.browserForceRestart())
+    server.use(prerender.httpHeaders())
+    server.use(prerender.removeScriptTags())
+    server.use(prerender.sendPrerenderHeader())
+    server.use(require('./plugins/http-headers'))
+
     server.start();
+
   }
 }
 
