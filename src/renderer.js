@@ -1,4 +1,4 @@
-
+﻿
 const prerenderNode = require('prerender-node');
 const url       = require('url');
 const querySting = require('querystring');
@@ -28,19 +28,21 @@ async function renderHtml(req, res) {
             .set('prerenderServiceUrl', config.PRERENDER_URL)
             .set('afterRender', function(err, req, prerender_res) {
                 if (err) {
+                    winston.error(err)
+                    winston.error(`Error for url ${req?.query?.url}`)
                     return { cancelRender: true };
                 }
                 
                 prerender_res.body = removeScriptTags(prerender_res.body);
                 prerender_res.body = updateBaseUrl(prerender_res.body, search.baseUrl||htmlUrl.origin||'');
-                
+
             });;
 
         return prerenderNode(req, res);                
     }
     catch (err) {
         res.status(500).send(`Error when rendering page ${clientUrl}`);
-        console.log(err);
+        console.error(err);
     }
 
 }
