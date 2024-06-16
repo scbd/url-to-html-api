@@ -1,4 +1,4 @@
-﻿
+
 const prerenderNode = require('prerender-node');
 const url       = require('url');
 const querySting = require('querystring');
@@ -23,6 +23,10 @@ async function renderHtml(req, res) {
             };
         }
         winston.log('Domain validation passed');
+
+        if(process.env.SHOW_REQ_DETAILS == 'true'){
+            winston.debug(req.headers)
+        }
         
         prerenderNode
             .set('prerenderServiceUrl', config.PRERENDER_URL)
