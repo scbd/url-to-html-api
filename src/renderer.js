@@ -5,7 +5,7 @@ const querySting = require('querystring');
 const winston = require('./logger')(__filename);
 const config = require('./config');
 
-async function renderHtml(req, res) {
+async function renderHtml(req, res, next) {
     
     let clientUrl = req.query.url.replace(/^\//, '');
 
@@ -53,7 +53,7 @@ async function renderHtml(req, res) {
                 
             });;
 
-        return prerenderNode(req, res);                
+        return prerenderNode(req, res, next);                
     }
     catch (err) {
         res.status(500).send(`Error when rendering page ${clientUrl}`);
