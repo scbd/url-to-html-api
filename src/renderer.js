@@ -23,6 +23,10 @@ async function renderHtml(req, res) {
             };
         }
         winston.log('Domain validation passed');
+
+        if(process.env.SHOW_REQ_DETAILS == 'true'){
+            winston.debug(req.headers)
+        }
         
         prerenderNode
             .set('prerenderServiceUrl', config.PRERENDER_URL)
@@ -36,6 +40,13 @@ async function renderHtml(req, res) {
                 prerender_res.body = removeScriptTags(prerender_res.body);
                 prerender_res.body = updateBaseUrl(prerender_res.body, search.baseUrl||htmlUrl.origin||'');
 
+                // remove CF headers as these headers were added by the initial request to the server,
+                const headersToRemove = ['via','x-amz-cf-id', 'x-amz-cf-pop', 'x-cache', 'x-frame-options']
+                headersToRemove.forEach(header=>{
+                    if(prerender_res.headers[header])
+                        delete prerender_res.headers[header]
+                })
+                
             });;
 
         return prerenderNode(req, res);                
