@@ -25,9 +25,12 @@ async function renderHtml(req, res) {
         winston.log('Domain validation passed');
 
         // console.log(process.env.SHOW_REQ_DETAILS)
-        if(['true', true].includes(process.env.SHOW_REQ_DETAILS)){
-            winston.debug(req.headers)
-        }
+        // if(['true', true].includes(process.env.SHOW_REQ_DETAILS)){
+            winston.log(`************ Req headers : `)
+            winston.log(req.headers)
+            winston.log(`****************************`)
+
+        // }
         
         prerenderNode
             .set('prerenderServiceUrl', config.PRERENDER_URL)
