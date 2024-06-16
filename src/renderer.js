@@ -24,8 +24,8 @@ async function renderHtml(req, res) {
         }
         winston.log('Domain validation passed');
 
-        console.log(process.env.SHOW_REQ_DETAILS)
-        if(process.env.SHOW_REQ_DETAILS == 'true'){
+        // console.log(process.env.SHOW_REQ_DETAILS)
+        if(['true', true].includes(process.env.SHOW_REQ_DETAILS)){
             winston.debug(req.headers)
         }
         
