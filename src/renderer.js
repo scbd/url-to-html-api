@@ -26,9 +26,9 @@ async function renderHtml(req, res, next) {
 
         // console.log(process.env.SHOW_REQ_DETAILS)
         // if(['true', true].includes(process.env.SHOW_REQ_DETAILS)){
-            winston.log(`************ Req headers : `)
-            winston.log(req.headers)
-            winston.log(`****************************`)
+            console.log(`************ Req headers : `)
+            console.log(req.headers)
+            console.log(`****************************`)
 
         // }
         
