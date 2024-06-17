@@ -22,14 +22,14 @@ async function initializeChrome(){
             '--disable-setuid-sandbox', '--disable-dev-shm-usage'
 		];
 
-        console.log(puppeteer.executablePath())
+        log(`executablePath`, puppeteer.executablePath())
 
         log('initializing chrome');
 
         browser = await puppeteer.launch({
             args: chromeFlags,
-            ignoreHTTPSErrors: true,
-            headless: true,
+            // ignoreHTTPSErrors: true,
+            // headless: false,
             // sloMo: config.DEBUG_MODE ? 250 : undefined,
         })
         
@@ -51,6 +51,8 @@ async function renderHtml (req, res){
     lastCall = +new Date();
     let response;
     let page;
+
+    let reqStatus = {};
     try {        
             
             await initializeChrome();
@@ -74,9 +76,11 @@ async function renderHtml (req, res){
             }
             log('Domain validation passed');
 
-            page.on('console', async message =>{
-                log(`${message.type().substr(0, 3).toUpperCase()} ${message.text()}`)
-            });
+            if(process.env.debug){
+                page.on('console', async message =>{
+                    log(`${message.type().substr(0, 3).toUpperCase()} ${message.text()}`)
+                });
+            }
 
             page.on('request', async req => {
 
@@ -88,19 +92,35 @@ async function renderHtml (req, res){
                 abortRequest = isImg && ~cURL.pathname.indexOf('/api/v2013/documents/');
                 abortRequest = abortRequest //|| !isCBDDomain(cURL.hostname);
                 abortRequest = abortRequest || abortNetworkUrlRequest(requestUrl);
-                if(requestUrl.indexOf('https://cdn.jsdelivr.net/npm/bootstrap-icons@1')>=0){
-                    log(`making request for ${cURL.hostname}, ${requestUrl}}`);
+                if(requestUrl.indexOf('bootstrap.min.css')>=0){
+                    log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
                 }
-                
+                if(!abortRequest){
+                    reqStatus[requestUrl] = 'request';
+                }
                 let headers = {...req.headers() }                
-                if(isCBDDomain(cURL.hostname)){
+                // if(!isCBDDomain(cURL.hostname)){
+                //     // delete headers['x-is-prerender'];// = 'true';
+                //     // if(headers['access-control-request-headers'] == 'x-is-prerender')
+                //     //     delete headers['access-control-request-headers']
+                //     // deleteOriginRequestHeaders(headers);        
+                    
+                    // log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
+                // }
+
+                let redirectFrom = '';
+                const redirectChain = req.redirectChain();
+                if(redirectChain?.length)
+                    redirectFrom = redirectChain[0].url();
+
+                if([requestUrl, redirectFrom].includes(clientUrl) || isCBDDomain(cURL.hostname)){
                     headers['x-is-prerender'] = 'true';
-                    // deleteOriginRequestHeaders(headers);         
                 }
 
                 if(process.env.logHeaders){
                     console.log('url', req.url(), `headers: `, headers)
                 }
+
                 if(abortRequest){
                     req.abort();
                 }
@@ -108,6 +128,10 @@ async function renderHtml (req, res){
                     req.continue({headers});
                 
             });
+            page.on('response', async res => {
+                // console.log(res.url(), res.status())
+                delete reqStatus[res.url()]
+            })
             const stylesheetContents = {};
             let   importStyleSheets  = []
             
@@ -118,6 +142,10 @@ async function renderHtml (req, res){
 
             let pdfOpts = {waitUntil : 'networkidle0', timeout:20*1000} //timeout:0 (makes it infinite)
             
+            //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
+            // await page.setExtraHTTPHeaders({
+            //     'x-is-prerender': 'true'
+            // })
             await page.goto(clientUrl, pdfOpts);
             log('finished goto');
             // await sleep(5000);
@@ -162,7 +190,7 @@ async function renderHtml (req, res){
             if(search.cfCache == 'false')
                 cacheControlHeader = {};
 
-            log(`Total time taken: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
+            console.log(`Total time taken to render ${clientUrl}: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
 
             return res.status(200)
                     .set({
@@ -175,6 +203,9 @@ async function renderHtml (req, res){
         logError(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
         logError('error catch', err);
         res.status(500).send(`Error when rendering page ${clientUrl}`);
+
+        if(Object.keys(reqStatus)?.length)
+            console.log(`Pending requests :`, reqStatus)
     }
     finally{
         if(page)
@@ -261,9 +292,9 @@ function log(message){
     }
 
 }
-function logError(message){
+function logError(message, ...params){
 
-    console.info(new Date(), message, `${(((+new Date())-lastCall)/1000).toFixed(5)} secs`);
+    console.info(new Date(), message,params, `${(((+new Date())-lastCall)/1000).toFixed(5)} secs`);
     lastCall = +new Date()
 
 }
@@ -300,7 +331,8 @@ function isCBDDomain(hostname){
 function abortNetworkUrlRequest(url){
 
     return /api\.cbddev\.xyz\/socket\.io/.test(url) ||
-           /api\.cbd\.int\/socket\.io/.test(url) 
+           /api\.cbd\.int\/socket\.io/.test(url) ||
+           /www\.gstatic\.com/.test(url) 
         //     ||
         //    /\app\/authorize\.html$/.test(url) || 
         //    /\/error-logs/.test(url)
