@@ -7,7 +7,7 @@ function asyncwrap(fn) { return function (req, res, next) { fn(req, res, next).c
 function createRouter() {
 
   const router = express.Router();
-  initPrerenderServer();
+  // initPrerenderServer();
 
   router.get  ('/api/render-html',  setTimeout, validate,  asyncwrap(renderer.renderHtml));
 
@@ -23,27 +23,7 @@ function createRouter() {
     next();
   }
 
-  function initPrerenderServer(){
 
-    const prerender = require('prerender');
-    const server = prerender({
-      port:3000,
-      chromeFlags: ['--no-sandbox','--headless', '--disable-gpu', '--remote-debugging-port=9222', '--hide-scrollbars','--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    });
-
-    server.use(prerender.addMetaTags())
-    // server.use(prerender.blockResources())
-    server.use(prerender.browserForceRestart())
-    server.use(prerender.httpHeaders())
-    server.use(prerender.removeScriptTags())
-    server.use(prerender.sendPrerenderHeader())
-    server.use(require('./plugins/http-headers'))
-    // server.use(require('./plugins/block-resources'))
-    
-
-    server.start();
-
-  }
 }
 
 module.exports = createRouter;
