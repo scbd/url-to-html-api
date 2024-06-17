@@ -97,11 +97,6 @@ async function renderHtml (req, res){
                     headers['x-is-prerender'] = 'true';
                     // deleteOriginRequestHeaders(headers);         
                 }
-                // if (cache[requestUrl] && cache[requestUrl].expires > Date.now()) {
-                //     await req.respond(cache[requestUrl]);
-                //     console.log(`served cached url response for ${requestUrl}`)
-                //     return;
-                // }
 
                 if(process.env.logHeaders){
                     console.log('url', req.url(), `headers: `, headers)
@@ -115,72 +110,7 @@ async function renderHtml (req, res){
             });
             const stylesheetContents = {};
             let   importStyleSheets  = []
-            //copy local stylesheets to inline (to avoid multiple http calls for google index).
-            // page.on('response', async resp => {
-            //     try{
-            //         var resStatus = resp.status();
-            //         if(resStatus != 200)
-            //             return;
-
-
-            //         const headers = resp.headers();
-            //         const cacheControl = headers['cache-control'] || '';
-            //         const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
-            //         const maxAge = maxAgeMatch && maxAgeMatch.length > 1 ? parseInt(maxAgeMatch[1], 10) : 0;
-
-            //         const responseUrl   = resp.url();
-            //         const cssURL        = new URL(responseUrl);
-            //         const isStylesheet  = resp.request().resourceType() === 'stylesheet';
-
-            //         let buffer;
-            //             try {
-            //                 buffer = await resp.buffer();
-            //             } catch (error) {
-            //                 // some responses do not contain buffer and do not need to be catched
-            //                 // return;
-            //             }
-
-            //         // if (1==2 && isStylesheet) {
-            //         //     stylesheetContents[responseUrl] = await resp.text();
-    
-            //         //     if(isCBDDomain(cssURL.origin)){
-            //         //         let regex = /^@import url\((?:"|')(.*)(?:"|')\)(?:;)?$/igm
-            //         //         let imports = stylesheetContents[responseUrl].match(regex);
-            //         //         if(imports && imports.length>0){
-            //         //             forEach(imports, (u)=>{
-            //         //                 let urlMatches = u.match(/^@import url\((?:"|')(.*)(?:"|')\)(?:;)?$/);
-            //         //                 let cssUrl = urlMatches[1].replace(/\.\.\//g, '');
-            //         //                 let css = {
-            //         //                     url: cssUrl,
-            //         //                     originalString: u, baseCss:responseUrl
-            //         //                 };
-            //         //                 importStyleSheets.push(css);                   
-            //         //             })
-            //         //         }
-            //         //     }
-            //         // }
-
-            //         if (maxAge &&  buffer) {
-            //             if (cache[responseUrl] && cache[responseUrl].expires > Date.now()) return;
-
-            //             cache[responseUrl] = {
-            //                 status: resp.status(),
-            //                 headers: resp.headers(),
-            //                 body: buffer,
-            //                 expires: Date.now() + (maxAge * 1000),
-            //             };
-            //         }
-            //     }
-            //     catch(err){
-            //         // logError(err, resp)
-            //     }
-            // });
-
-            //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
-            // await page.setExtraHTTPHeaders({
-            //     'x-is-prerender': 'true'
-            // })
-            // await appendOriginRequestHeaders(page, (event||{}).headers);
+            
 
             if(process.env.logHeaders){
                 console.log('origin headers', req.headers);
@@ -229,6 +159,8 @@ async function renderHtml (req, res){
             log('Base url updated');
 
             let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
+            if(search.cfCache == 'false')
+                cacheControlHeader = {};
 
             log(`Total time taken: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
 
@@ -238,85 +170,6 @@ async function renderHtml (req, res){
                     })
                     .send(pageContent);
 
-            // // special case for Sixth national report [Mexico|Costa Rica which are 10MB in size]
-            // // since Google bot and other SEO bots do not respect 301/302 for the original request which we are doing here due to AWS Lambda limitation
-            // // strip out all style elements since they are of no use to crawlers
-            
-            // if(pageContent.length > 5800000 && req.headers){
-            //     try{
-            //         log('page content is bigger than 5.8 mb' + pageContent.length)
-                    
-            //         const seoBotRegx = /(bot|crawl|archiver|transcoder|spider|uptime|validator|fetcher|cron|checker|reader|extractor|monitoring|analyzer|scraper)/i
-            //         const userAgent = req.headers['X-Origin-User-Agent'];
-            //         log('origin UA' + userAgent);
-                    
-            //         if(seoBotRegx.test(userAgent)){
-            //             const cheerio = require('cheerio');
-            //             let $ = cheerio.load(pageContent);
-            //             $('.page-content').find('*[style]').removeAttr('style');
-                        
-            //             pageContent = $.html();
-            //             log('Style attributes removed, length reduced to ' + pageContent.length)
-            //         }
-            //         else{
-            //             log('User-agent is not bot...')
-            //         }
-            //     }
-            //     catch(err){
-            //         console.error('error executing special SEO condition', err);
-            //     }
-            // }
-            
-            // // if(pageContent.length <= 5800000){
-            // //     pageContent = minimizeHtml(pageContent);
-            // //     log('minimize end');
-            // // }
-
-            // let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
-            // if(search.cfCache == 'false')
-            //     cacheControlHeader = {};
-            // ////////////////////////////////
-            // /// Since there is a Lambda response limit of 6MB upload content to S3 and 302 to the S3 file
-            // ////////////////////////////////
-            // if(pageContent.length < 5800000){ //5.8 MB
-            //     log('Response is lower than 5.8 mb, returning normal request response.')
-            //     response = {
-            //         'statusCode': 200,
-            //         'headers'   : {
-            //             "Content-Type" : "text/html",
-            //             ...cacheControlHeader
-            //         },
-            //         'body'      : pageContent
-            //     }
-            // }
-            // else{
-            //     log('response larger than 5.8 mb, saving to s3...')
-            //     const S3_BUCKET = 'pdf-cache-prod';
-            //     let key = 'html-files/' +guid() + '.html';
-                
-            //     let s3Options =  {
-            //         Bucket      : S3_BUCKET, 
-            //         Key         : key,
-            //         ContentType : 'text/html', 
-            //         Body        : pageContent, 
-            //         ACL         : 'public-read'
-            //     };
-            //     const S3 = new AWS.S3();
-            //     log('s3 initiated')
-
-            //     let s3File = await S3.putObject(s3Options).promise();
-            //     log('finish upload', s3File,)
-
-                // log(`Total time taken: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`)
-            //     return {
-            //         statusCode: 302,
-            //         headers: {
-            //             "Location": `https://s3.amazonaws.com/${S3_BUCKET}/${s3Options.Key}`,
-            //             ...cacheControlHeader
-            //         },
-            //         body: null
-            //     }
-            // }
             
     } catch (err) {
         logError(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
