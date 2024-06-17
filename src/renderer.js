@@ -13,23 +13,24 @@ let browser;
 const cacheControl = 7*24*60*60; //7days
 const originHeaderName = 'x-origin';
 // On top of your code
-const cache = {};
-
 
 async function initializeChrome(){
     if(!browser){
         let chromeFlags = [
-			'--no-sandbox','--headless', '--disable-gpu', 
-         '--hide-scrollbars',
+			'--no-sandbox', '--disable-gpu', 
+            '--hide-scrollbars',
             '--disable-setuid-sandbox', '--disable-dev-shm-usage'
 		];
-console.log(puppeteer.executablePath())
+
+        console.log(puppeteer.executablePath())
+
+        log('initializing chrome');
+
         browser = await puppeteer.launch({
             args: chromeFlags,
-            // defaultViewport: chrome.defaultViewport,
-            // executablePath: await chrome.executablePath(),
-            // headless: chrome.headless,
-            // ignoreHTTPSErrors: true,
+            ignoreHTTPSErrors: true,
+            headless: true,
+            // sloMo: config.DEBUG_MODE ? 250 : undefined,
         })
         
         //fake page so that if the last tap is closed the instance stays in memory
@@ -87,18 +88,20 @@ async function renderHtml (req, res){
                 abortRequest = isImg && ~cURL.pathname.indexOf('/api/v2013/documents/');
                 abortRequest = abortRequest //|| !isCBDDomain(cURL.hostname);
                 abortRequest = abortRequest || abortNetworkUrlRequest(requestUrl);
-                // log(`making request for ${cURL.hostname}, ${requestUrl}}`);
+                if(requestUrl.indexOf('https://cdn.jsdelivr.net/npm/bootstrap-icons@1')>=0){
+                    log(`making request for ${cURL.hostname}, ${requestUrl}}`);
+                }
                 
                 let headers = {...req.headers() }                
-                if(!isCBDDomain(cURL.hostname)){
-                    delete headers['x-is-prerender'];
+                if(isCBDDomain(cURL.hostname)){
+                    headers['x-is-prerender'] = 'true';
                     // deleteOriginRequestHeaders(headers);         
                 }
-                if (cache[requestUrl] && cache[requestUrl].expires > Date.now()) {
-                    await req.respond(cache[requestUrl]);
-                    console.log(`served cached url response for ${requestUrl}`)
-                    return;
-                }
+                // if (cache[requestUrl] && cache[requestUrl].expires > Date.now()) {
+                //     await req.respond(cache[requestUrl]);
+                //     console.log(`served cached url response for ${requestUrl}`)
+                //     return;
+                // }
 
                 if(process.env.logHeaders){
                     console.log('url', req.url(), `headers: `, headers)
@@ -113,71 +116,70 @@ async function renderHtml (req, res){
             const stylesheetContents = {};
             let   importStyleSheets  = []
             //copy local stylesheets to inline (to avoid multiple http calls for google index).
-            page.on('response', async resp => {
-                try{
-                    var resStatus = resp.status();
-                    if(resStatus != 200)
-                        return;
+            // page.on('response', async resp => {
+            //     try{
+            //         var resStatus = resp.status();
+            //         if(resStatus != 200)
+            //             return;
 
 
-                    const headers = resp.headers();
-                    const cacheControl = headers['cache-control'] || '';
-                    const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
-                    const maxAge = maxAgeMatch && maxAgeMatch.length > 1 ? parseInt(maxAgeMatch[1], 10) : 0;
+            //         const headers = resp.headers();
+            //         const cacheControl = headers['cache-control'] || '';
+            //         const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+            //         const maxAge = maxAgeMatch && maxAgeMatch.length > 1 ? parseInt(maxAgeMatch[1], 10) : 0;
 
-                    const responseUrl   = resp.url();
-                    const cssURL        = new URL(responseUrl);
-                    const isStylesheet  = resp.request().resourceType() === 'stylesheet';
+            //         const responseUrl   = resp.url();
+            //         const cssURL        = new URL(responseUrl);
+            //         const isStylesheet  = resp.request().resourceType() === 'stylesheet';
 
-                    let buffer;
-                        try {
-                            buffer = await resp.buffer();
-                        } catch (error) {
-                            // some responses do not contain buffer and do not need to be catched
-                            // return;
-                        }
+            //         let buffer;
+            //             try {
+            //                 buffer = await resp.buffer();
+            //             } catch (error) {
+            //                 // some responses do not contain buffer and do not need to be catched
+            //                 // return;
+            //             }
 
-                    if (isStylesheet) {
-                        stylesheetContents[responseUrl] = await resp.text();
+            //         // if (1==2 && isStylesheet) {
+            //         //     stylesheetContents[responseUrl] = await resp.text();
     
-                        if(isCBDDomain(cssURL.origin)){
-                            let regex = /^@import url\((?:"|')(.*)(?:"|')\)(?:;)?$/igm
-                            let imports = stylesheetContents[responseUrl].match(regex);
-                            if(imports && imports.length>0){
-                                forEach(imports, (u)=>{
-                                    let urlMatches = u.match(/^@import url\((?:"|')(.*)(?:"|')\)(?:;)?$/);
-                                    let cssUrl = urlMatches[1].replace(/\.\.\//g, '');
-                                    let css = {
-                                        url: cssUrl,
-                                        originalString: u, baseCss:responseUrl
-                                    };
-                                    importStyleSheets.push(css);                   
-                                })
-                            }
-                        }
-                    }
+            //         //     if(isCBDDomain(cssURL.origin)){
+            //         //         let regex = /^@import url\((?:"|')(.*)(?:"|')\)(?:;)?$/igm
+            //         //         let imports = stylesheetContents[responseUrl].match(regex);
+            //         //         if(imports && imports.length>0){
+            //         //             forEach(imports, (u)=>{
+            //         //                 let urlMatches = u.match(/^@import url\((?:"|')(.*)(?:"|')\)(?:;)?$/);
+            //         //                 let cssUrl = urlMatches[1].replace(/\.\.\//g, '');
+            //         //                 let css = {
+            //         //                     url: cssUrl,
+            //         //                     originalString: u, baseCss:responseUrl
+            //         //                 };
+            //         //                 importStyleSheets.push(css);                   
+            //         //             })
+            //         //         }
+            //         //     }
+            //         // }
 
-                    if (maxAge &&  buffer) {
-                        if (cache[responseUrl] && cache[responseUrl].expires > Date.now()) return;
+            //         if (maxAge &&  buffer) {
+            //             if (cache[responseUrl] && cache[responseUrl].expires > Date.now()) return;
 
-                        cache[responseUrl] = {
-                            status: resp.status(),
-                            headers: resp.headers(),
-                            body: buffer,
-                            expires: Date.now() + (maxAge * 1000),
-                        };
-                    }
-                }
-                catch(err){
-                    // console.log(err, resp)
-                }
-            });
+            //             cache[responseUrl] = {
+            //                 status: resp.status(),
+            //                 headers: resp.headers(),
+            //                 body: buffer,
+            //                 expires: Date.now() + (maxAge * 1000),
+            //             };
+            //         }
+            //     }
+            //     catch(err){
+            //         // logError(err, resp)
+            //     }
+            // });
 
             //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
-            await page.setExtraHTTPHeaders({
-                'X-Is-Prerender': 'true',
-                'x-is-prerender': 'true'
-            })
+            // await page.setExtraHTTPHeaders({
+            //     'x-is-prerender': 'true'
+            // })
             // await appendOriginRequestHeaders(page, (event||{}).headers);
 
             if(process.env.logHeaders){
@@ -221,10 +223,14 @@ async function renderHtml (req, res){
             log(`page content received, length : ${pageContent.length}(${formatBytes(pageContent.length)})`)
             
             pageContent = removeScriptTags(pageContent);
-            pageContent = updateBaseUrl(pageContent, search.baseUrl||htmlUrl.origin||'');
             log('remove script end');
 
+            pageContent = updateBaseUrl(pageContent, search.baseUrl||htmlUrl.origin||'');
+            log('Base url updated');
+
             let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
+
+            log(`Total time taken: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
 
             return res.status(200)
                     .set({
@@ -301,7 +307,7 @@ async function renderHtml (req, res){
             //     let s3File = await S3.putObject(s3Options).promise();
             //     log('finish upload', s3File,)
 
-            //     log(`Total time taken: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`)
+                // log(`Total time taken: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`)
             //     return {
             //         statusCode: 302,
             //         headers: {
@@ -313,8 +319,8 @@ async function renderHtml (req, res){
             // }
             
     } catch (err) {
-        log(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
-        console.error('error catch', err);
+        logError(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
+        logError('error catch', err);
         res.status(500).send(`Error when rendering page ${clientUrl}`);
     }
     finally{
@@ -402,6 +408,12 @@ function log(message){
     }
 
 }
+function logError(message){
+
+    console.info(new Date(), message, `${(((+new Date())-lastCall)/1000).toFixed(5)} secs`);
+    lastCall = +new Date()
+
+}
 
 function guid(sep) {
     function s4() {
@@ -469,7 +481,7 @@ async function appendOriginRequestHeaders(page, headers){
         }
     }
     catch(e){
-        log('error adding request headers to prerender request', e);
+        logError('error adding request headers to prerender request', e);
     }
 
 }
@@ -487,7 +499,7 @@ async function deleteOriginRequestHeaders(headers){
         }
     }
     catch(e){
-        log('error removing request headers from external request', e);
+        logError('error removing request headers from external request', e);
     }
 
 }
