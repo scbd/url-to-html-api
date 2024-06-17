@@ -25,10 +25,11 @@ function createRouter() {
 
   function initPrerenderServer(){
 
-    const prerender = require('prerender');
+    const prerender = require('./libs/prerender');
     const server = prerender({
       port:3000,
-      chromeFlags: ['--no-sandbox','--headless', '--disable-gpu', '--remote-debugging-port=9222', '--hide-scrollbars','--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      chromeFlags: ['--no-sandbox','--headless', '--disable-gpu', '--remote-debugging-port=9222', '--hide-scrollbars','--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      logRequests: process.env.PRERENDER_LOG_REQUESTS === 'true'
     });
 
     server.use(prerender.addMetaTags())

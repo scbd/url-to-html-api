@@ -1,5 +1,5 @@
 ﻿
-const prerenderNode = require('prerender-node');
+const prerenderNode = require('./libs/prerender-node');
 const url       = require('url');
 const querySting = require('querystring');
 const winston = require('./logger')(__filename);
@@ -27,7 +27,7 @@ async function renderHtml(req, res, next) {
         // console.log(process.env.SHOW_REQ_DETAILS)
         // if(['true', true].includes(process.env.SHOW_REQ_DETAILS)){
             console.log(`************ Req headers : `)
-            console.log(req.headers)
+            console.log(req.headers['from'], req.headers['x-origin-user-agent'])
             console.log(`****************************`)
 
         // }
