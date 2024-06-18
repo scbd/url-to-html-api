@@ -8,6 +8,7 @@ const url = require('url');
 const btoa = require('btoa');
 const atob = require('atob');
 
+
 const chrome = exports = module.exports = {};
 
 const PARSE_HTML_TimedOut = 15000
@@ -292,7 +293,13 @@ chrome.setUpEvents = async function (tab) {
         // const blocked = false;
         // console.log(`- ${blocked ? 'BLOCK' : 'ALLOW'} ${request.url}`);
         
-
+		const cURL         = new URL(request.url);
+        if(!isCBDDomain(cURL.hostname)){
+			if(request.headers['Access-Control-Request-Headers'] == 'x-is-prerender')
+				delete request.headers['Access-Control-Request-Headers'];
+			if(request.headers['x-is-prerender'])
+				delete request.headers['x-is-prerender']
+		}
 		if (cache[request.url] && cache[request.url].expires > Date.now() && 
 			cache[request.url]?.body?.length){
 				//https://github.com/puppeteer/puppeteer/issues/1191#issuecomment-421007646
@@ -318,6 +325,7 @@ chrome.setUpEvents = async function (tab) {
 		else{
 			Network.continueInterceptedRequest({
 				interceptionId,
+				headers:request.headers
 				// errorReason: blocked ? 'Aborted' : undefined
 			});
 		}
@@ -1166,3 +1174,9 @@ function firstNonNegative(values) {
 	const value = values.find((value) => value >= 0);
 	return value === undefined ? -1 : value;
 }
+
+function isCBDDomain(hostname){
+   
+    return /cbd\.int$/.test(hostname) || 
+           /cbddev\.xyz$/.test(hostname)
+} 

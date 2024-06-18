@@ -37,8 +37,8 @@ function createRouter() {
     server.use(prerender.browserForceRestart())
     server.use(prerender.httpHeaders())
     server.use(prerender.removeScriptTags())
-    server.use(prerender.sendPrerenderHeader())
-    server.use(require('./plugins/http-headers'))
+    // server.use(prerender.sendPrerenderHeader())
+    // server.use(require('./plugins/http-headers'))
     // server.use(require('./plugins/block-resources'))
     
 
