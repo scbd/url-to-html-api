@@ -5,6 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const url = require('url');
 
+const btoa = require('btoa');
+const atob = require('atob');
+
 const chrome = exports = module.exports = {};
 
 const PARSE_HTML_TimedOut = 15000
@@ -21,6 +24,7 @@ const UnableToCapturePdf = 'UnableToCapturePdf';
 
 chrome.name = 'Chrome';
 
+const cache = {};
 
 
 chrome.spawn = function (options) {
@@ -114,7 +118,7 @@ chrome.getChromeLocation = function () {
 };
 
 
-
+let globalBrowserContext = null;
 chrome.openTab = function (options) {
 	return new Promise((resolve, reject) => {
 
@@ -141,10 +145,11 @@ chrome.openTab = function (options) {
 		connectToBrowser(this.webSocketDebuggerURL, this.options.browserDebuggingPort)
 			.then((chromeBrowser) => {
 				browser = chromeBrowser;
-
+				// if(globalBrowserContext)
+				// 	return
 				return browser.Target.createBrowserContext();
 			}).then(({ browserContextId }) => {
-
+				// globalBrowserContext = globalBrowserContext || browserContextId;
 				browserContext = browserContextId;
 
 				return browser.Target.createTarget({
@@ -204,7 +209,8 @@ chrome.setUpEvents = async function (tab) {
 		Network,
 		Emulation,
 		Log,
-		Console
+		Console,
+		Fetch
 	} = tab;
 
 	await Promise.all([
@@ -213,7 +219,10 @@ chrome.setUpEvents = async function (tab) {
 		Security.enable(),
 		Network.enable(),
 		Log.enable(),
-		Console.enable()
+		Console.enable(),
+		Network.setRequestInterception({ patterns: [{ urlPattern: '*' }] })
+		// Fetch.enable(),
+		// Fetch.RequestPattern.urlPattern = '*'
 	]);
 
 	//hold onto info that could be used later if saving a HAR file
@@ -269,11 +278,56 @@ chrome.setUpEvents = async function (tab) {
 			util.log('error handling certificate error:', err);
 		});
 	});
+	// Fetch.requestPaused(({requestId, request, resourceType})=>{
+
+
+	// 	Fetch.continueRequest({
+	// 		requestId
+	// 	})
+	// })
+
+
+	Network.requestIntercepted(({interceptionId, request}) => {
+        // perform a test against the intercepted request
+        // const blocked = false;
+        // console.log(`- ${blocked ? 'BLOCK' : 'ALLOW'} ${request.url}`);
+        
+
+		if (cache[request.url] && cache[request.url].expires > Date.now() && 
+			cache[request.url]?.body?.length){
+				//https://github.com/puppeteer/puppeteer/issues/1191#issuecomment-421007646
+				const body = cache[request.url]?.body
+				const bodyData = cache[request.url].base64Encoded ? atob(body) : body;
+				
+				const newBody = bodyData + `\nconsole.log('Intercepted and modified ${request.url}');`;
+
+				const newHeaders = [
+					'HTTP/1.1 200 OK',
+					'Date: ' + (new Date()).toUTCString(),
+					'Connection: closed',
+					'Content-Length: ' + newBody.length,
+					// 'Content-Type: text/javascript'
+				  ];
+
+				Network.continueInterceptedRequest({
+					interceptionId,
+					rawResponse : btoa(newHeaders.join('\r\n') + '\r\n\r\n' + newBody)
+					// errorReason: blocked ? 'Aborted' : undefined
+				});
+		}
+		else{
+			Network.continueInterceptedRequest({
+				interceptionId,
+				// errorReason: blocked ? 'Aborted' : undefined
+			});
+		}
+    });
 
 	Network.requestWillBeSent((params) => {
 		tab.prerender.numRequestsInFlight++;
 		tab.prerender.requests[params.requestId] = params.request.url;
-		if (tab.prerender.logRequests || this.options.logRequests) util.log('+', tab.prerender.numRequestsInFlight, params.request.url);
+		if (tab.prerender.logRequests || this.options.logRequests) 
+			util.log('+', tab.prerender.numRequestsInFlight, params.request.url);
 
 		if (!tab.prerender.initialRequestId) {
 			util.log(`Initial request to ${params.request.url}`);
@@ -322,7 +376,9 @@ chrome.setUpEvents = async function (tab) {
 		}
 	});
 
-	Network.dataReceived(({ requestId, dataLength }) => {
+	Network.dataReceived(({data, requestId, dataLength }) => {
+		if(data?.length)
+				console.log(data)
 		let entry = tab.prerender.pageLoadInfo.entries[requestId];
 		if (!entry) {
 			return;
@@ -384,6 +440,7 @@ chrome.setUpEvents = async function (tab) {
 			}
 			entry.encodedResponseLength = encodedDataLength;
 			entry.responseFinishedS = timestamp;
+			// loadContent(requestId, request, entry, tab.prerender.initialRequestId)
 		}
 	});
 
@@ -427,6 +484,41 @@ chrome.setUpEvents = async function (tab) {
 		if (tab.prerender.logRequests || this.options.logRequests) util.log(params.entry);
 	});
 
+	async function loadContent (requestId, request, entry, initialRequestId){
+		try{
+			const whitelistContent = [
+
+			]
+			if(initialRequestId != requestId){
+				const headers = entry?.responseParams?.response?.headers;
+				console.log(headers["content-type"])
+				//&& whitelistContent.includes(headers["content-type"])
+				if(headers && /\.(js|css)/.test(request)){
+					const cacheControl = headers['cache-control'] || '';
+					const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+					const maxAge = maxAgeMatch && maxAgeMatch.length > 1 ? parseInt(maxAgeMatch[1], 10) : 0;
+					// const responseBody = await Network.getResponseBody({requestId})
+					const response = await Network.getResponseBody({ requestId });
+    				
+					// console.log(request, maxAge, responseBody?.body?.length)
+
+					if (maxAge &&  response?.body?.length) {
+						if (cache[request] && cache[request].expires > Date.now()) 
+							return;
+						cache[request] = {
+							status: entry?.responseParams.response.status,
+							headers: headers,
+							...response,
+							expires: Date.now() + (maxAge * 1000),
+						};
+					}
+				}
+			}
+		}
+		catch(e){
+			console.error(request)
+		}
+	}
 	return tab;
 };
 
@@ -597,7 +689,6 @@ chrome.checkIfPageIsDoneLoading = function (tab) {
 	});
 
 };
-
 
 
 chrome.executeJavascript = function (tab, javascript) {
