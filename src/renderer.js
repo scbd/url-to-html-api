@@ -51,6 +51,11 @@ async function renderHtml(req, res, next) {
                         delete prerender_res.headers[header]
                 })
                 
+                const cacheControl = 7*24*60*60; //7days
+                let cacheControlHeader = `public, max-age=${cacheControl}`;
+                if(search.cfCache != 'false')
+                    prerender_res.headers['cache-control'] = cacheControlHeader
+
             });;
 
         return prerenderNode(req, res, next);                
