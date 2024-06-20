@@ -29,7 +29,35 @@ async function renderHtml(req, res, next) {
             console.log(`************ Req headers : `)
             console.log(req.headers['from'], req.headers['x-origin-user-agent'])
             console.log(`****************************`)
+        }
 
+        const i18nDomains = [
+                             'bch.cbd.int', 'bch-training.cbd.int', 
+                             'absch.cbd.int', 'training-absch.cbd.int', 
+                             'chm.cbd.int', 'training-chm.cbd.int'
+                            ];
+        // if(!htmlUrl.pathname.endsWith('/')){
+        //     const domain = `${htmlUrl.protocol}//${htmlUrl.host}`;
+        //     const newUrl = req.url.replace(`url=${domain}${htmlUrl.pathname}`, `url=${domain}${htmlUrl.pathname}/`)
+        //     return res.redirect(newUrl)
+        // }
+        if(i18nDomains.includes(htmlUrl.hostname)){
+            if(/^\/(ar|en|es|fr|ru|zh)$/.test(htmlUrl.pathname)){
+                const domain = `${htmlUrl.protocol}//${htmlUrl.host}`;
+                const newUrl = req.url.replace(`url=${domain}${htmlUrl.pathname}`, `url=${domain}${htmlUrl.pathname}/`)
+                // return res.redirect(newUrl)
+                console.info(`Url changed from ${req.url} to ${newUrl}`);
+                req.url = req.query.url = newUrl;
+
+            }
+
+            if(!/^\/(ar|en|es|fr|ru|zh)\/?/.test(htmlUrl.pathname)){
+                const domain = `${htmlUrl.protocol}//${htmlUrl.host}`;
+                const newUrl = req.url.replace(`url=${domain}`, `url=${domain}/en`);
+                console.info(`Url changed from ${req.url} to ${newUrl}`);
+                req.url = req.query.url = newUrl;
+                // return res.redirect(newUrl)
+            }
         }
         
         prerenderNode

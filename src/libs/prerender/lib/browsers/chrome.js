@@ -4,14 +4,14 @@ const util = require('../util.js');
 const fs = require('fs');
 const os = require('os');
 const url = require('url');
-
+const {inspect} = require("util");
 const btoa = require('btoa');
 const atob = require('atob');
 
 
 const chrome = exports = module.exports = {};
 
-const PARSE_HTML_TimedOut = 15000
+const PARSE_HTML_TimedOut = 25000
 const sleep = (durationMs) => new Promise((resolve) => setTimeout(() => { resolve() }, durationMs));
 const ChromeConnectionClosed = 'ChromeConnectionClosed';
 const UnableToLoadURL = 'UnableToLoadURL';
@@ -588,12 +588,20 @@ chrome.loadUrlThenWaitForPageLoadEvent = function (tab, url, onNavigated) {
 					if (!finished) {
 						finished = true;
 						util.log('page timed out', tab.prerender.url);
-
+						
 						const timeoutStatusCode = tab.prerender.timeoutStatusCode || this.options.timeoutStatusCode;
 						if (timeoutStatusCode) {
 							tab.prerender.statusCode = timeoutStatusCode;
 						}
 						tab.prerender.timedout = true;
+
+						util.log(`			lastRequestReceivedAt 		: ${tab.prerender.lastRequestReceivedAt}`);
+						util.log(`			statusCode			  		: ${tab.prerender.statusCode}`);
+						util.log(`			numRequestsInFlight   		: ${tab.prerender.numRequestsInFlight}`);
+						util.log(`			firstPrerenderReadyTime   	: ${tab.prerender.firstPrerenderReadyTime}`);
+						util.log(`			errors   					: ${tab.prerender.errors}`);
+						// util.log(`			pageLoadInfo		  		: ${inspect(tab.prerender.pageLoadInfo)}`);
+						  
 
 						resolve();
 					}
