@@ -8,8 +8,9 @@ function createRouter() {
 
   const router = express.Router();
   // initPrerenderServer();
-
-  router.get  ('/api/render-html',  setTimeout, validate,  asyncwrap(renderer.renderHtml));
+  renderer.processInflightRequest();
+  
+  router.get  ('/api/render-html',  setTimeout, validate,  asyncwrap(renderer.renderUrl));
 
   return router;
 

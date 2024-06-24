@@ -7,34 +7,48 @@ const { forEach, findKey}  = require('lodash');
 const minify    = require('html-minifier').minify;
 const querySting = require('querystring');
 
-let startTime;
-let lastCall;
 let browser;
 const cacheControl = 7*24*60*60; //7days
 const originHeaderName = 'x-origin';
 // On top of your code
 
+const inflightRequests = {};
+
+const sleep = (timeout)=>new Promise((resolve) => setTimeout(resolve, timeout));
+
 async function initializeChrome(){
     if(!browser){
         let chromeFlags = [
 			'--no-sandbox', '--disable-gpu', 
-            '--hide-scrollbars',
+            '--hide-scrollbars', '--headless',
             '--disable-setuid-sandbox', '--disable-dev-shm-usage'
 		];
+        let headless = true;
 
-        log(`executablePath`, puppeteer.executablePath())
+        if(process.env.showBrowser == 'true'){
+            chromeFlags = chromeFlags.filter(e=>e!= '--headless')
+            headless = false
+        }
+
+        // log(`executablePath`, puppeteer.executablePath())
 
         log('initializing chrome');
 
-        browser = await puppeteer.launch({
-            args: chromeFlags,
+        const chromeOptions = {
+            args: chromeFlags,            
+            headless,
             // ignoreHTTPSErrors: true,
-            // headless: false,
-            // sloMo: config.DEBUG_MODE ? 250 : undefined,
-        })
+            // sloMo: config.DEBUG_MODE ? 250 : undefined,        
+        }
+
+        browser = await puppeteer.launch(chromeOptions)
         
-        //fake page so that if the last tap is closed the instance stays in memory
-        const fakePage = await browser.newPage();
+        let numberOfOpenPages = (await browser.pages()).length
+        if(numberOfOpenPages == 0){
+            //fake page so that if the last tap is closed the instance stays in memory
+            const fakePage = await browser.newPage();
+        }
+
         log('Chrome new instance initialized')
     }
     else{
@@ -42,20 +56,157 @@ async function initializeChrome(){
     }
 
     return browser;
+
 }
 
-async function renderHtml (req, res){
+async function renderUrl (req, res){
+    const clientUrl = req.query.url.replace(/^\//, '');
+    let htmlUrl = new url.URL(clientUrl);
+    let search  = querySting.parse((htmlUrl.search||'').replace(/^\?/, ''));
+    const startTime = +new Date();
+    const lastCall = +new Date();
+    try{
 
-    let clientUrl = req.query.url.replace(/^\//, '');
-    startTime = +new Date();
-    lastCall = +new Date();
+        cleanUpInflightRequests();
+        // if(inflightRequests.find(clientUrl)){
+
+        // }
+
+        log('Adding inflight request for ', clientUrl);
+
+        inflightRequests[clientUrl] = { 
+            url         : clientUrl,
+            requestDate : new Date(),
+            status : 'request',
+            numberOfChecks : 0
+        };
+
+        if(process.env.logHeaders == 'true'){
+            console.log('origin request headers', req.headers);
+        }
+
+        const response = await renderInflightRequest(clientUrl);
+
+        // const index = inflightRequests.findIndex(e=>e.url = clientUrl);
+        
+
+        let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
+        if(search.cfCache == 'false')
+            cacheControlHeader = {};
+        return res.status(200)
+                    .set(cacheControlHeader)
+                    .send(response.content);
+
+    }
+    catch(e){
+        console.log(`Request error for ${clientUrl}`, inflightRequests[clientUrl], e)
+        res.status(500)
+    }
+    finally{
+        inflightRequests[clientUrl] = undefined;
+        delete inflightRequests[clientUrl];
+    }
+}
+
+async function renderInflightRequest(url){
+
+    const urlRequest = inflightRequests[url]
+    if(urlRequest){
+
+        if(['finished', 'error'].includes(urlRequest.status)){
+            return urlRequest;
+        }
+
+        if(urlRequest.numberOfChecks > 60*5){
+            throw new Error('Too much wait time for request to process ', urlRequest)
+        }
+
+        urlRequest.numberOfChecks += 1;
+        await sleep(1000);
+        return renderInflightRequest(url);
+    }
+    else{
+        throw new Error('Request not found inflight', url)
+    }
+}
+
+async function processInflightRequest(){
+    try{
+        await initializeChrome();
+
+        while(true){
+            if(Object.keys(inflightRequests)?.length> 0 ){
+
+                console.log(`process inflight running`, Object.keys(inflightRequests)?.length);
+
+                const canProcessRequest = await hasFreeTabs();
+                if(canProcessRequest){
+                    const urlRequest = Object.values(inflightRequests)?.find(e=>e?.status == 'request');
+
+                    if(urlRequest?.status == 'request'){
+                        renderHtml(urlRequest)
+                    }
+                }
+                else{
+                    const tabCount = (await browser.pages()).length
+                    console.log(`Current browser has ${tabCount}`)
+                }
+
+                await sleep(200);
+            }
+            else {
+                console.log('no request in flight')
+                await sleep(2000);
+            }
+        }
+
+    }
+    catch(e){
+        console.error(`Error in processInflightRequest`, e)
+        await sleep(1000)
+        processInflightRequest();
+    }
+
+
+}
+
+async function hasFreeTabs(){
+    if(!browser)
+        await initializeChrome();
+
+    let numberOfOpenPages = (await browser.pages()).length
+    let waitedSeconds = 0
+    if(numberOfOpenPages > 10){
+        log(`number of inflight request have reached limit, ${numberOfOpenPages}. 
+            no of inflight request ${Object.keys(inflightRequests)?.length}.
+            waitedSeconds : ${waitedSeconds}`);
+       
+        while(numberOfOpenPages > 10){
+            await sleep(1000);
+            waitedSeconds += 1000;
+            numberOfOpenPages = (await browser.pages()).length
+        }
+    }
+
+    return true;
+}
+
+async function renderHtml (urlRequest){
+
+    let clientUrl = urlRequest.url.replace(/^\//, '');
+    const startTime = +new Date();
+    const lastCall = +new Date();
     let response;
     let page;
 
     let reqStatus = {};
     try {        
             
+            urlRequest.status = 'inflight';
+            
             await initializeChrome();
+
+            urlRequest.renderStartedOn = new Date();
 
             page = await browser.newPage();
             await page.setRequestInterception(true);
@@ -76,9 +227,10 @@ async function renderHtml (req, res){
             }
             log('Domain validation passed');
 
-            if(process.env.debug){
+            if(process.env.debug == 'true'){
                 page.on('console', async message =>{
-                    log(`${message.type().substr(0, 3).toUpperCase()} ${message.text()}`)
+                    if(process.env.showConsole == 'true')
+                        log(`${message.type().substr(0, 3).toUpperCase()} ${message.text()} \n ${JSON.stringify(message.stackTrace())}`)
                 });
             }
 
@@ -92,12 +244,18 @@ async function renderHtml (req, res){
                 abortRequest = isImg && ~cURL.pathname.indexOf('/api/v2013/documents/');
                 abortRequest = abortRequest //|| !isCBDDomain(cURL.hostname);
                 abortRequest = abortRequest || abortNetworkUrlRequest(requestUrl);
-                if(requestUrl.indexOf('bootstrap.min.css')>=0){
-                    log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
+                // if(requestUrl.indexOf('bootstrap.min.css')>=0){
+                //     log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
+                // }
+
+                if(abortRequest){
+                    return req.abort();
                 }
+
                 if(!abortRequest){
                     reqStatus[requestUrl] = 'request';
                 }
+
                 let headers = {...req.headers() }                
                 // if(!isCBDDomain(cURL.hostname)){
                 //     // delete headers['x-is-prerender'];// = 'true';
@@ -115,37 +273,39 @@ async function renderHtml (req, res){
 
                 if([requestUrl, redirectFrom].includes(clientUrl) || isCBDDomain(cURL.hostname)){
                     headers['x-is-prerender'] = 'true';
+                    return req.continue({
+                        headers
+                    });
                 }
 
-                if(process.env.logHeaders){
-                    console.log('url', req.url(), `headers: `, headers)
-                }
-
-                if(abortRequest){
-                    req.abort();
-                }
-                else
-                    req.continue({headers});
+                req.continue();
                 
             });
             page.on('response', async res => {
                 // console.log(res.url(), res.status())
+                if(process.env.logHeaders == 'true'){
+                    const requestUrl   = res.url();
+                    const cURL         = new URL(requestUrl);
+                    if( isCBDDomain(cURL.hostname)){
+                        console.log(`url ${res.url()}, headers: ${JSON.stringify(res.request().headers())}`)
+                    }
+                }
                 delete reqStatus[res.url()]
             })
             const stylesheetContents = {};
             let   importStyleSheets  = []
             
 
-            if(process.env.logHeaders){
-                console.log('origin headers', req.headers);
-            }
-
-            let pdfOpts = {waitUntil : 'networkidle0', timeout:20*1000} //timeout:0 (makes it infinite)
+            const timeout = 60*1000
+            let pdfOpts = {waitUntil : 'networkidle0', timeout} //timeout:0 (makes it infinite)
             
             //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
             // await page.setExtraHTTPHeaders({
             //     'x-is-prerender': 'true'
-            // })
+            // });
+
+            await page.setDefaultNavigationTimeout(timeout); 
+
             await page.goto(clientUrl, pdfOpts);
             log('finished goto');
             // await sleep(5000);
@@ -186,34 +346,67 @@ async function renderHtml (req, res){
             pageContent = updateBaseUrl(pageContent, search.baseUrl||htmlUrl.origin||'');
             log('Base url updated');
 
-            let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
-            if(search.cfCache == 'false')
-                cacheControlHeader = {};
-
             console.log(`Total time taken to render ${clientUrl}: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
 
-            return res.status(200)
-                    .set({
-                        ...cacheControlHeader
-                    })
-                    .send(pageContent);
+            // return res.status(200)
+            //         .set({
+            //             ...cacheControlHeader
+            //         })
+            //         .send(pageContent);
+            urlRequest.status = 'finished';
+            urlRequest.content = pageContent;
+            urlRequest.renderFinishedOn = new Date();
 
             
     } catch (err) {
         logError(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
         logError('error catch', err);
-        res.status(500).send(`Error when rendering page ${clientUrl}`);
+        urlRequest.status = 500
+        urlRequest.error = `Error when rendering page ${clientUrl}`;
+        urlRequest.renderErrorOn = new Date();
 
         if(Object.keys(reqStatus)?.length)
             console.log(`Pending requests :`, reqStatus)
+
+
+        urlRequest.status = 'error';
     }
     finally{
         if(page)
             await page.close();            
     }
 
-    return response;
+    
 }
+
+function cleanUpInflightRequests(){
+
+    Object.keys(inflightRequests)?.forEach(url=>{
+        const urlRequest = inflightRequests[url];
+
+        //should not exists more than 5 mins
+        if(['finished', 'error'].includes(urlRequest?.status)){
+            const timeSince = diffInMinutes(urlRequest.renderFinishedOn||urlRequest.renderErrorOn, new Date);
+
+            if(timeSince > 5){
+                inflightRequests[url] = undefined;
+                delete inflightRequests[clientUrl];
+            }
+
+        }
+    });
+
+}
+
+function diffInMinutes(dt2, dt1) 
+ {
+  // Calculate the difference in milliseconds between the two provided dates and convert it to seconds
+  var diff =(dt2.getTime() - dt1.getTime()) / 1000;
+  // Convert the difference from seconds to minutes
+  diff /= 60;
+  // Return the absolute value of the rounded difference in minutes
+  return Math.abs(Math.round(diff));
+ }
 
 function removeScriptTags(content){
 
@@ -286,16 +479,17 @@ function minimizeHtml(content){
 }
 function log(message){
 
-    if(process.env.debug){
-        console.log(new Date(), message, `${(((+new Date())-lastCall)/1000).toFixed(5)} secs`);
-        lastCall = +new Date()
+    if(process.env.debug == 'true'){
+        // -lastCall
+        console.log(new Date(), message, `${(((+new Date()))/1000).toFixed(5)} secs`);
+        // lastCall = +new Date()
     }
 
 }
 function logError(message, ...params){
-
-    console.info(new Date(), message,params, `${(((+new Date())-lastCall)/1000).toFixed(5)} secs`);
-    lastCall = +new Date()
+// -lastCall
+    console.info(new Date(), message,params, `${(((+new Date()))/1000).toFixed(5)} secs`);
+    // lastCall = +new Date()
 
 }
 
@@ -325,13 +519,15 @@ function formatBytes(bytes, decimals, binaryUnits) {
 function isCBDDomain(hostname){
    
     return /cbd\.int$/.test(hostname) || 
-           /cbddev\.xyz$/.test(hostname)
+           /cbddev\.xyz$/.test(hostname) || hostname == 'localhost'
 }   
 
 function abortNetworkUrlRequest(url){
 
     return /api\.cbddev\.xyz\/socket\.io/.test(url) ||
            /api\.cbd\.int\/socket\.io/.test(url) ||
+        //    /socket\.io/.test(url) ||
+           /cdn\.slaask\.com/.test(url) ||
            /www\.gstatic\.com/.test(url) 
         //     ||
         //    /\app\/authorize\.html$/.test(url) || 
@@ -357,7 +553,7 @@ async function appendOriginRequestHeaders(page, headers){
                         }
                 }
             }
-            if(process.env.logHeaders){
+            if(process.env.logHeaders == 'true'){
                 console.log('new origin headers', extraHeaders, headers);
             }
             //currently setting extra header is breaking for unknown reasons. skip for now
@@ -407,5 +603,6 @@ function updateBaseUrl(content, baseUrl){
 }
 
 module.exports = {
-    renderHtml
+    renderUrl,
+    processInflightRequest
 }
