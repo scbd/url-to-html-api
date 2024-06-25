@@ -11,6 +11,7 @@ let browser;
 const cacheControl = 7*24*60*60; //7days
 const originHeaderName = 'x-origin';
 // On top of your code
+let restartBrowser = false;
 
 const inflightRequests = {};
 
@@ -89,13 +90,20 @@ async function renderUrl (req, res){
 
         // const index = inflightRequests.findIndex(e=>e.url = clientUrl);
         
+        if(response.status = 'finished'){
 
-        let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
-        if(search.cfCache == 'false')
-            cacheControlHeader = {};
-        return res.status(200)
-                    .set(cacheControlHeader)
-                    .send(response.content);
+            let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
+            if(search.cfCache == 'false')
+                cacheControlHeader = {};
+            return res.status(200)
+                        .set(cacheControlHeader)
+                        .send(response.content);
+        }
+        else {
+
+            return res.status(500)
+                        .send(response.error || 'Internal server error');
+        }
 
     }
     catch(e){
@@ -296,7 +304,7 @@ async function renderHtml (urlRequest){
             let   importStyleSheets  = []
             
 
-            const timeout = 60*1000
+            const timeout = process.env.PAGE_LOAD_TIMEOUT || 120*1000
             let pdfOpts = {waitUntil : 'networkidle0', timeout} //timeout:0 (makes it infinite)
             
             //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
@@ -359,6 +367,11 @@ async function renderHtml (urlRequest){
 
             
     } catch (err) {
+        if(err.indexOf('TimeoutError: Navigation timeout')>=0){
+            restartBrowser = true;
+            console.log('Request set to restart browser')
+        }
+        
         logError(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
         logError('error catch', err);
         urlRequest.status = 500
