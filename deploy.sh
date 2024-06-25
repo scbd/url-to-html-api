@@ -1,0 +1,1 @@
+ssh ubuntu@100.25.171.188 'sudo docker pull scbd/url-to-html-api:prerender-dev && sudo docker service update --force prerender_urlToHtml'
