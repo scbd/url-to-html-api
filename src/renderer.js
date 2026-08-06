@@ -137,11 +137,25 @@ async function renderInflightRequest(url){
 
         urlRequest.numberOfChecks += 1;
         await sleep(1000);
-        return renderInflightRequest(url);
+        if(inflightRequests[url])
+            return renderInflightRequest(url);
     }
     else{
         throw new Error('Request not found inflight', url)
     }
+}
+
+async function restartChrome(){
+    console.log('Request received to restart browser, waiting for all tabs to close')
+    await waitForAllTabsToFinish(0);
+    await sleep(1000);
+    await browser.close();
+    browser = undefined;
+    console.log('Browser restarted!!!!!!')
+
+    await initializeChrome();
+
+    restartBrowser = false;
 }
 
 async function processInflightRequest(){
@@ -152,6 +166,10 @@ async function processInflightRequest(){
             if(Object.keys(inflightRequests)?.length> 0 ){
 
                 console.log(`process inflight running`, Object.keys(inflightRequests)?.length);
+                
+                if(restartBrowser){
+                    await restartChrome()
+                }
 
                 const canProcessRequest = await hasFreeTabs();
                 if(canProcessRequest){
@@ -203,6 +221,33 @@ async function hasFreeTabs(){
     }
 
     return true;
+}
+
+
+async function waitForAllTabsToFinish(iteration = 0){
+    if(!browser)
+        return;
+
+    let waitedSeconds     = 0;
+    let numberOfOpenPages = (await browser.pages());
+    for(index in numberOfOpenPages){
+        const page = numberOfOpenPages[index];
+
+        if(page.url() == 'about:blank'){
+            await page.close();
+        }
+    }
+    if(numberOfOpenPages?.length > 0){
+        log(`number of inflight open request are ${numberOfOpenPages.length}.
+            waitedSeconds : ${waitedSeconds}`);
+       
+        await sleep(1000);
+       if(iteration > 30)
+            return;
+
+       return waitForAllTabsToFinish(iteration+1)
+    }
+
 }
 
 async function renderHtml (urlRequest){
@@ -373,12 +418,9 @@ async function renderHtml (urlRequest){
 
             
     } catch (err) {
-        if(err.indexOf('TimeoutError: Navigation timeout')>=0){
-            restartBrowser = true;
-            console.log('Request set to restart browser')
-        }
         
-        logError(`error in processing request, ${JSON.stringify(err||{msg:'noerror'})}`)
+        const errorMessage = `${JSON.stringify(err||{msg:'noerror'})}`;
+        logError(`error in processing request, ${errorMessage}`)
         logError('error catch', err);
         urlRequest.status = 500
         urlRequest.error = `Error when rendering page ${clientUrl}`;
@@ -387,12 +429,22 @@ async function renderHtml (urlRequest){
         if(Object.keys(reqStatus)?.length)
             console.log(`Pending requests :`, reqStatus)
 
-
         urlRequest.status = 'error';
+
+        if(errorMessage.indexOf('TimeoutError')>=0){
+            restartBrowser = true;
+            console.log('Request set to restart browser')
+        }
     }
     finally{
-        if(page)
-            await page.close();            
+        if(page){
+            try{
+                await page.close();            
+            }
+            catch(e){
+                console.log(`unable to close the page ${clientUrl}`);
+            }
+        }
     }
 
     
