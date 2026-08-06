@@ -3,7 +3,7 @@ const url       = require('url');
 // const chrome    = require("@sparticuz/chromium")
 const puppeteer = require("puppeteer")
 const AWS       = require('aws-sdk');
-const { forEach, findKey}  = require('lodash');
+const { forEach, findKey, forIn}  = require('lodash');
 const minify    = require('html-minifier').minify;
 const querySting = require('querystring');
 
@@ -21,7 +21,7 @@ async function initializeChrome(){
     if(!browser){
         let chromeFlags = [
 			'--no-sandbox', '--disable-gpu', 
-            '--hide-scrollbars', '--headless',
+            '--hide-scrollbars', '--headless', 
             '--disable-setuid-sandbox', '--disable-dev-shm-usage'
 		];
         let headless = true;
@@ -59,6 +59,10 @@ async function initializeChrome(){
     return browser;
 
 }
+
+// setInterval(() => {
+//     restartBrowser = true;
+// }, 15000);
 
 async function renderUrl (req, res){
     const clientUrl = req.query.url.replace(/^\//, '');
