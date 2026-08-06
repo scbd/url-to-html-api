@@ -115,8 +115,10 @@ async function renderUrl (req, res){
         res.status(500)
     }
     finally{
-        inflightRequests[clientUrl] = undefined;
-        delete inflightRequests[clientUrl];
+        setTimeout(() => {
+            inflightRequests[clientUrl] = undefined;
+            delete inflightRequests[clientUrl];
+        }, 5000);
     }
 }
 
@@ -406,8 +408,9 @@ function cleanUpInflightRequests(){
             const timeSince = diffInMinutes(urlRequest.renderFinishedOn||urlRequest.renderErrorOn, new Date);
 
             if(timeSince > 5){
+                console.log(`cleaning url after 5 mins of processing ${url}`)
                 inflightRequests[url] = undefined;
-                delete inflightRequests[clientUrl];
+                delete inflightRequests[url];
             }
 
         }
