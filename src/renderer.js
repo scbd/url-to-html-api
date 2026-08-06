@@ -502,18 +502,18 @@ function removeScriptTags(content){
     return content;
 }
 
-function log(message){
+function log(message, ...params){
 
     if(process.env.debug == 'true'){
         // -lastCall
-        console.log(new Date(), message, `${(((+new Date()))/1000).toFixed(5)} secs`);
+        console.log(new Date(), message, ...params, `${(((+new Date()))/1000).toFixed(5)} secs`);
         // lastCall = +new Date()
     }
 
 }
 function logError(message, ...params){
 // -lastCall
-    console.info(new Date(), message,params, `${(((+new Date()))/1000).toFixed(5)} secs`);
+    console.error(new Date(), message,params, `${(((+new Date()))/1000).toFixed(5)} secs`);
     // lastCall = +new Date()
 
 }
