@@ -88,7 +88,7 @@ async function renderUrl (req, res){
         }
 
         if(process.env.logHeaders == 'true'){
-            console.log('origin request headers', req.headers);
+            log('origin request headers', req.headers);
         }
 
         const response = await renderInflightRequest(clientUrl);
@@ -110,7 +110,7 @@ async function renderUrl (req, res){
 
     }
     catch(e){
-        console.log(`Request error for ${clientUrl}`, inflightRequests[clientUrl], e)
+        logError(`Request error for ${clientUrl}`, inflightRequests[clientUrl], e)
         return res.status(500).send('Internal server error');
     }
     finally{
@@ -146,12 +146,12 @@ async function renderInflightRequest(url){
 }
 
 async function restartChrome(){
-    console.log('Request received to restart browser, waiting for all tabs to close')
+    log('Request received to restart browser, waiting for all tabs to close')
     await waitForAllTabsToFinish(0);
     await sleep(1000);
     await browser.close();
     browser = undefined;
-    console.log('Browser restarted!!!!!!')
+    log('Browser restarted!!!!!!')
 
     await initializeChrome();
 
@@ -165,8 +165,8 @@ async function processInflightRequest(){
         while(true){
             if(Object.keys(inflightRequests)?.length> 0 ){
 
-                console.log(`process inflight running`, Object.keys(inflightRequests)?.length);
-                
+                log(`process inflight running, ${Object.keys(inflightRequests)?.length}`);
+
                 if(restartBrowser){
                     await restartChrome()
                 }
@@ -181,20 +181,19 @@ async function processInflightRequest(){
                 }
                 else{
                     const tabCount = (await browser.pages()).length
-                    console.log(`Current browser has ${tabCount}`)
+                    log(`Current browser has ${tabCount}`)
                 }
 
                 await sleep(200);
             }
             else {
-                console.log('no request in flight')
                 await sleep(2000);
             }
         }
 
     }
     catch(e){
-        console.error(`Error in processInflightRequest`, e)
+        logError(`Error in processInflightRequest`, e)
         await sleep(1000)
         processInflightRequest();
     }
@@ -272,7 +271,7 @@ async function renderHtml (urlRequest){
     
                         
             clientUrl = clientUrl.replace(/^\//, '');
-            console.log(`Rendering url: ${clientUrl}`)
+            log(`Rendering url: ${clientUrl}`)
 
             let htmlUrl = new url.URL(clientUrl);
             let search  = querySting.parse((htmlUrl.search||'').replace(/^\?/, ''));
@@ -347,7 +346,7 @@ async function renderHtml (urlRequest){
                     const requestUrl   = res.url();
                     const cURL         = new URL(requestUrl);
                     if( isCBDDomain(cURL.hostname)){
-                        console.log(`url ${res.url()}, headers: ${JSON.stringify(res.request().headers())}`)
+                        log(`url ${res.url()}, headers: ${JSON.stringify(res.request().headers())}`)
                     }
                 }
                 delete reqStatus[res.url()]
@@ -406,7 +405,7 @@ async function renderHtml (urlRequest){
             pageContent = updateBaseUrl(pageContent, search.baseUrl||htmlUrl.origin||'');
             log('Base url updated');
 
-            console.log(`Total time taken to render ${clientUrl}: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
+            log(`Total time taken to render ${clientUrl}: ${(((+new Date())-startTime)/1000).toFixed(5)} secs`);
 
             // return res.status(200)
             //         .set({
@@ -421,19 +420,18 @@ async function renderHtml (urlRequest){
     } catch (err) {
         
         const errorMessage = err ? err.toString() : 'noerror';
-        logError(`error in processing request, ${errorMessage}`)
-        logError('error catch', err);
+        logError(`error in processing request, ${errorMessage}`, err)
         urlRequest.error = `Error when rendering page ${clientUrl}`;
         urlRequest.renderErrorOn = new Date();
 
         if(Object.keys(reqStatus)?.length)
-            console.log(`Pending requests :`, reqStatus)
+            logError(`Pending requests :`, reqStatus)
 
         urlRequest.status = 'error';
 
         if(errorMessage.indexOf('TimeoutError')>=0){
             restartBrowser = true;
-            console.log('Request set to restart browser')
+            log('Request set to restart browser')
         }
     }
     finally{
@@ -442,7 +440,7 @@ async function renderHtml (urlRequest){
                 await page.close();            
             }
             catch(e){
-                console.log(`unable to close the page ${clientUrl}`);
+                logError(`unable to close the page ${clientUrl}`);
             }
         }
     }
@@ -460,7 +458,7 @@ function cleanUpInflightRequests(){
             const timeSince = diffInMinutes(urlRequest.renderFinishedOn||urlRequest.renderErrorOn, new Date);
 
             if(timeSince > 5){
-                console.log(`cleaning url after 5 mins of processing ${url}`)
+                log(`cleaning url after 5 mins of processing ${url}`)
                 inflightRequests[url] = undefined;
                 delete inflightRequests[url];
             }
