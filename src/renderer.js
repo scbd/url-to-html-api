@@ -149,7 +149,18 @@ async function restartChrome(){
     log('Request received to restart browser, waiting for all tabs to close')
     await waitForAllTabsToFinish(0);
     await sleep(1000);
-    await browser.close();
+
+    const browserToClose = browser;
+    const childProcess = browserToClose.process();
+
+    await Promise.race([browserToClose.close(), sleep(5000)])
+        .catch(e => logError('Error closing browser gracefully', e));
+
+    if(childProcess && childProcess.exitCode === null && !childProcess.killed){
+        log('Browser did not close gracefully, force killing process');
+        childProcess.kill('SIGKILL');
+    }
+
     browser = undefined;
     log('Browser restarted!!!!!!')
 
