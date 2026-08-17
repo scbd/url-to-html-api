@@ -10,6 +10,17 @@ const cacheControl = 7*24*60*60; //7days
 // On top of your code
 let restartBrowser = false;
 
+// Soft-404s: SPAs that return HTTP 200 with a shell page but render a "not found"
+// state client-side for routes with no matching data. Add signatures here as they're found.
+const SOFT_404_PATTERNS = [
+    /<span class="color-red bold" style="font-size:50px;">Page not found\.<\/span>/, // bch/absch/chm.cbd.int (shared AngularJS platform)
+    /class="text-medium-emphasis float-start">The page you are looking for was not found\.<\/p>/ // ort.cbd.int (separate React app)
+];
+
+function detectSoftNotFound(content){
+    return SOFT_404_PATTERNS.some(pattern => pattern.test(content));
+}
+
 const inflightRequests = {};
 
 const sleep = (timeout)=>new Promise((resolve) => setTimeout(resolve, timeout));
@@ -140,10 +151,12 @@ async function renderUrl (req, res){
 
         if(response.status === 'finished'){
 
+            const statusCode = response.statusCode || 200;
+
             let cacheControlHeader = {'Cache-Control': `public, max-age=${cacheControl}` };
-            if(search.cfCache == 'false')
+            if(search.cfCache == 'false' || statusCode !== 200)
                 cacheControlHeader = {};
-            return res.status(200)
+            return res.status(statusCode)
                         .set(cacheControlHeader)
                         .send(response.content);
         }
@@ -475,6 +488,19 @@ async function renderHtml (urlRequest){
             //             ...cacheControlHeader
             //         })
             //         .send(pageContent);
+            urlRequest.statusCode = detectSoftNotFound(pageContent) ? 404 : 200;
+            if(urlRequest.statusCode === 404){
+                log(`Soft 404 detected for ${clientUrl}`);
+                reportEvent('soft_404', {
+                    url: clientUrl,
+                    domain: htmlUrl.hostname,
+                    ip: urlRequest.ip,
+                    userAgent: urlRequest.userAgent,
+                    referer: urlRequest.referer,
+                    country: urlRequest.country
+                });
+            }
+
             urlRequest.status = 'finished';
             urlRequest.content = pageContent;
             urlRequest.renderFinishedOn = new Date();
