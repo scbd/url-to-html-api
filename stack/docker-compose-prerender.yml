@@ -25,6 +25,36 @@ services:
     restart: always
     networks:
       - prerender
+    stop_grace_period: 35s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "50"
+    deploy:
+      mode: replicated
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2500M
+        reservations:
+          cpus: '1'
+          memory: 1250M
+
+  stats:
+    image: scbd/url-to-html-api:prerender-dev
+    command: ["node", "src/stats/server.js"]
+    restart: always
+    ports:
+      - target: 7200
+        published: 7200
+        protocol: tcp
+        mode: host
+    networks:
+      - prerender
+    volumes:
+      - stats-data:/usr/src/app/data
     logging:
       driver: json-file
       options:
@@ -33,13 +63,16 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
       resources:
         limits:
-          cpus: '1'
-          memory: 1250M
+          cpus: '0.25'
+          memory: 256M
         reservations:
-          cpus: '1'
-          memory: 1250M
+          cpus: '0.1'
+          memory: 128M
 
 networks:
   prerender:
@@ -50,4 +83,5 @@ networks:
 volumes:
   portainer-data:
   nginx-data:
+  stats-data:
         

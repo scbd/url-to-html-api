@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prerender Stats</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page-plane:      #f9f9f7;
+    --surface-1:       #fcfcfb;
+    --text-primary:    #0b0b0b;
+    --text-secondary:  #52514e;
+    --text-muted:      #898781;
+    --gridline:        #e1e0d9;
+    --baseline:        #c3c2b7;
+    --border:          rgba(11,11,11,0.10);
+    --status-good:     #0ca30c;
+    --status-warning:  #fab219;
+    --status-critical: #d03b3b;
+    --series-blue:     #2a78d6;
+    --hover-wash:      rgba(11,11,11,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page-plane:      #0d0d0d;
+      --surface-1:       #1a1a19;
+      --text-primary:    #ffffff;
+      --text-secondary:  #c3c2b7;
+      --text-muted:      #898781;
+      --gridline:        #2c2c2a;
+      --baseline:        #383835;
+      --border:          rgba(255,255,255,0.10);
+      --status-good:     #0ca30c;
+      --status-warning:  #fab219;
+      --status-critical: #d03b3b;
+      --series-blue:     #3987e5;
+      --hover-wash:      rgba(255,255,255,0.06);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-plane);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 28px 24px 72px;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--text-muted); font-size: 12.5px; margin-bottom: 20px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 36px 0 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
+
+  .filters { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .filters button {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .filters button:hover { background: var(--hover-wash); }
+  .filters button[aria-pressed="true"] { color: var(--text-primary); border-color: var(--text-primary); font-weight: 600; }
+  .refresh-label { margin-left: auto; font-size: 12.5px; color: var(--text-muted); }
+  .filters select {
+    font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  }
+
+  .kpis { display: flex; gap: 12px; flex-wrap: wrap; }
+  .tile { padding: 14px 18px; min-width: 150px; flex: 1 1 150px; }
+  .tile-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+  .tile-value { font-size: 26px; font-weight: 600; line-height: 1; font-variant-numeric: proportional-nums; }
+  .tile-value.good { color: var(--status-good); }
+  .tile-value.warning { color: var(--status-warning); }
+  .tile-value.critical { color: var(--status-critical); }
+  .tile-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+  .tile-spark { display: block; }
+
+  .chart-card { padding: 16px 20px 12px; }
+  .chart-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); }
+  .legend-icon { width: 14px; height: 14px; flex: none; }
+  .toggle-view { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-secondary); cursor: pointer; }
+  .toggle-view:hover { background: var(--hover-wash); }
+
+  .chart-scroll { overflow-x: auto; }
+  svg text { fill: var(--text-muted); font-size: 10.5px; }
+  .bar-seg { cursor: pointer; }
+  .bar-seg:focus { outline: 2px solid var(--series-blue); outline-offset: 1px; }
+  .hit { fill: transparent; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); }
+  th { color: var(--text-muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.url { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-secondary); }
+  .badge svg { width: 12px; height: 12px; flex: none; }
+  .domain-bar-row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 10px; padding: 5px 0; }
+  .domain-name { font-size: 12.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .domain-track { height: 16px; border-radius: 3px; overflow: hidden; display: flex; background: var(--gridline); }
+  .domain-seg { height: 100%; }
+
+  .empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; }
+
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 50;
+    background: var(--text-primary); color: var(--page-plane);
+    font-size: 12px; padding: 6px 9px; border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    opacity: 0; transform: translateY(2px); transition: opacity 0.1s ease;
+    max-width: 260px;
+  }
+  #tooltip.show { opacity: 1; }
+  #tooltip .tt-value { font-weight: 700; }
+  #tooltip .tt-label { color: var(--text-muted); }
+</style>
+</head>
+<body>
+  <h1>Prerender activity</h1>
+  <div class="sub" id="sub"></div>
+
+  <div class="filters" role="group" aria-label="Date range">
+    <button data-range="1" aria-pressed="true">1 day</button>
+    <button data-range="3">3 days</button>
+    <button data-range="5">5 days</button>
+    <button data-range="7">7 days</button>
+    <button data-range="14">14 days</button>
+    <button data-range="30">30 days</button>
+    <label class="refresh-label" for="refreshInterval">Refresh</label>
+    <select id="refreshInterval">
+      <option value="0">Off</option>
+      <option value="3000">3s</option>
+      <option value="5000" selected>5s</option>
+      <option value="10000">10s</option>
+      <option value="30000">30s</option>
+      <option value="60000">1m</option>
+      <option value="300000">5m</option>
+    </select>
+  </div>
+
+  <h2>Overview</h2>
+  <div class="kpis" id="kpis"></div>
+
+  <h2>Renders per day</h2>
+  <div class="card chart-card">
+    <div class="chart-head">
+      <div class="legend">
+        <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-good)"/><path d="M5 8.3l2 2 4-4.4" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Success</span>
+        <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-critical)"/><path d="M5.5 5.5l5 5m0-5l-5 5" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>Error</span>
+        <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="var(--status-warning)"/><rect x="7.3" y="6" width="1.4" height="4.2" fill="var(--text-primary)"/><rect x="7.3" y="11" width="1.4" height="1.4" fill="var(--text-primary)"/></svg>Restart</span>
+      </div>
+      <button class="toggle-view" id="dailyToggle">View as table</button>
+    </div>
+    <div class="chart-scroll"><div id="dailyChart"></div></div>
+    <div id="dailyTableWrap" style="display:none">
+      <table>
+        <thead><tr><th>Date</th><th class="num">Success</th><th class="num">Error</th><th class="num">Restart</th><th class="num">Total</th></tr></thead>
+        <tbody id="dailyTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2>By domain</h2>
+  <div class="card chart-card">
+    <div id="domainBars"></div>
+  </div>
+  <table style="margin-top:12px">
+    <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Error rate</th></tr></thead>
+    <tbody id="domainTable"></tbody>
+  </table>
+
+  <h2>Recent errors &amp; restarts</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
+    <tbody id="recent"></tbody>
+  </table>
+
+  <div id="tooltip" role="tooltip"></div>
+
+<script>
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const STATUS = {
+  success: { color: 'var(--status-good)', hex: '#0ca30c', label: 'Success' },
+  error:   { color: 'var(--status-critical)', hex: '#d03b3b', label: 'Error' },
+  restart: { color: 'var(--status-warning)', hex: '#fab219', label: 'Restart' },
+};
+
+let rawCounts = [];
+let rawRecent = [];
+let retentionDays = 30;
+let rangeDays = 1;
+
+const tooltip = document.getElementById('tooltip');
+
+function showTooltip(x, y, label, value) {
+  tooltip.innerHTML = '';
+  const l = document.createElement('div');
+  l.className = 'tt-label';
+  l.textContent = label;
+  const v = document.createElement('div');
+  v.className = 'tt-value';
+  v.textContent = value;
+  tooltip.appendChild(l);
+  tooltip.appendChild(v);
+  tooltip.style.left = (x + 12) + 'px';
+  tooltip.style.top = (y + 12) + 'px';
+  tooltip.classList.add('show');
+}
+function hideTooltip() { tooltip.classList.remove('show'); }
+
+function statusOf(type) {
+  if (type === 'render_success') return 'success';
+  if (type === 'browser_restart') return 'restart';
+  return 'error';
+}
+
+function formatCompact(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return n.toLocaleString();
+}
+
+function isoDay(d) { return d.toISOString().slice(0, 10); }
+
+function cutoffDay(days) {
+  const d = new Date(Date.now() - (days - 1) * DAY_MS);
+  return isoDay(d);
+}
+
+async function load() {
+  const res = await fetch('http://localhost:7200/api/stats');
+  const data = await res.json();
+  rawCounts = data.counts;
+  rawRecent = data.recent;
+  retentionDays = data.retentionDays;
+  document.getElementById('sub').textContent = `up to ${retentionDays} days retained`;
+  render();
+}
+
+function render() {
+  const cutoff = cutoffDay(rangeDays);
+  const rows = rawCounts.filter((r) => r.date >= cutoff);
+  const recent = rawRecent.filter((e) => e.timestamp.slice(0, 10) >= cutoff);
+
+  const byStatus = { success: 0, error: 0, restart: 0 };
+  const byDay = {};
+  const byDomain = {};
+
+  rows.forEach((r) => {
+    const status = statusOf(r.type);
+    byStatus[status] += r.n;
+
+    byDay[r.date] = byDay[r.date] || { success: 0, error: 0, restart: 0 };
+    byDay[r.date][status] += r.n;
+
+    byDomain[r.domain] = byDomain[r.domain] || { success: 0, error: 0, restart: 0 };
+    byDomain[r.domain][status] += r.n;
+  });
+
+  const days = [];
+  for (let i = rangeDays - 1; i >= 0; i--) {
+    const key = isoDay(new Date(Date.now() - i * DAY_MS));
+    days.push({ date: key, ...(byDay[key] || { success: 0, error: 0, restart: 0 }) });
+  }
+
+  renderKpis(byStatus, days);
+  renderDailyChart(days);
+  renderDailyTable(days);
+  renderDomains(byDomain);
+  renderRecent(recent);
+}
+
+function sparkline(values, accentHex) {
+  const w = 100, h = 28, pad = 2;
+  const max = Math.max(1, ...values);
+  const stepX = (w - pad * 2) / Math.max(1, values.length - 1);
+  const pts = values.map((v, i) => {
+    const x = pad + i * stepX;
+    const y = h - pad - (v / max) * (h - pad * 2);
+    return [x, y];
+  });
+  const line = pts.map((p) => p.join(',')).join(' ');
+  const last = pts[pts.length - 1] || [pad, h - pad];
+  return `<svg class="tile-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <polyline points="${line}" fill="none" stroke="var(--text-muted)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.5" fill="${accentHex}"/>
+  </svg>`;
+}
+
+function tile(label, value, cls, values, accentHex) {
+  const div = document.createElement('div');
+  div.className = 'card tile';
+  const l = document.createElement('div');
+  l.className = 'tile-label';
+  l.textContent = label;
+  const v = document.createElement('div');
+  v.className = 'tile-value' + (cls ? ' ' + cls : '');
+  v.textContent = value;
+  div.appendChild(l);
+  div.appendChild(v);
+  if (values) {
+    const foot = document.createElement('div');
+    foot.className = 'tile-foot';
+    foot.innerHTML = sparkline(values, accentHex);
+    div.appendChild(foot);
+  }
+  return div;
+}
+
+function renderKpis(byStatus, days) {
+  const total = byStatus.success + byStatus.error;
+  const rate = total ? (byStatus.success / total) * 100 : null;
+  const rateCls = rate === null ? '' : rate >= 98 ? 'good' : rate >= 90 ? 'warning' : 'critical';
+
+  const kpis = document.getElementById('kpis');
+  kpis.innerHTML = '';
+  kpis.appendChild(tile('Successful renders', formatCompact(byStatus.success), '', days.map((d) => d.success), STATUS.success.hex));
+  kpis.appendChild(tile('Render errors', formatCompact(byStatus.error), '', days.map((d) => d.error), STATUS.error.hex));
+  kpis.appendChild(tile('Browser restarts', formatCompact(byStatus.restart), byStatus.restart > 0 ? 'warning' : '', days.map((d) => d.restart), STATUS.restart.hex));
+  kpis.appendChild(tile('Success rate', rate === null ? '–' : rate.toFixed(1) + '%', rateCls));
+}
+
+function roundedTopSegment(x, w, y, h, fill) {
+  if (h <= 0) return '';
+  const r = Math.min(4, h / 2, w / 2);
+  return `<rect class="bar-seg" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}" fill="${fill}"/>
+          <rect x="${x}" y="${y + r}" width="${w}" height="${Math.max(0, h - r)}" fill="${fill}"/>`;
+}
+
+function renderDailyChart(days) {
+  const el = document.getElementById('dailyChart');
+  if (!days.some((d) => d.success + d.error + d.restart > 0)) {
+    el.innerHTML = '<div class="empty">No renders in this range yet.</div>';
+    return;
+  }
+
+  const slot = 26;
+  const barW = 18;
+  const gap = 2;
+  const w = Math.max(320, days.length * slot);
+  const h = 150;
+  const plotH = h - 18;
+  const max = Math.max(1, ...days.map((d) => d.success + d.error + d.restart));
+
+  let marks = '';
+  days.forEach((d, i) => {
+    const x = i * slot + (slot - barW) / 2;
+    const successH = (d.success / max) * plotH;
+    const errorH = (d.error / max) * plotH;
+    const restartH = (d.restart / max) * plotH;
+
+    let y = plotH;
+    const segs = [
+      ['success', d.success, successH],
+      ['error', d.error, errorH],
+      ['restart', d.restart, restartH],
+    ];
+    const topIndex = (() => {
+      for (let k = segs.length - 1; k >= 0; k--) if (segs[k][2] > 0) return k;
+      return -1;
+    })();
+
+    segs.forEach(([status, val, segH], idx) => {
+      if (segH <= 0) return;
+      const hasAbove = segs.slice(idx + 1).some((s) => s[2] > 0);
+      const topY = y - segH;
+      const drawY = hasAbove ? topY + gap : topY;
+      const drawH = Math.max(0, segH - (hasAbove ? gap : 0));
+      y = topY;
+
+      if (idx === topIndex) {
+        marks += roundedTopSegment(x, barW, drawY, drawH, STATUS[status].hex);
+      } else {
+        marks += `<rect class="bar-seg" x="${x}" y="${drawY}" width="${barW}" height="${drawH}" fill="${STATUS[status].hex}"/>`;
+      }
+      marks += `<rect class="hit" data-date="${d.date}" data-status="${status}" data-value="${val}" tabindex="0" x="${x}" y="${topY}" width="${barW}" height="${Math.max(segH, 6)}"/>`;
+    });
+
+    if (i % Math.max(1, Math.ceil(days.length / 10)) === 0) {
+      marks += `<text x="${x + barW / 2}" y="${h}" text-anchor="middle">${d.date.slice(5)}</text>`;
+    }
+  });
+
+  el.innerHTML = `<svg width="${w}" height="${h}" role="img" aria-label="Renders per day, stacked by outcome">
+    <line x1="0" y1="${plotH}" x2="${w}" y2="${plotH}" stroke="var(--baseline)" stroke-width="1"/>
+    ${marks}
+  </svg>`;
+
+  el.querySelectorAll('.hit').forEach((hit) => {
+    const onEnter = (e) => {
+      const rect = hit.getBoundingClientRect();
+      const status = STATUS[hit.dataset.status];
+      showTooltip(rect.left, rect.top, `${hit.dataset.date} · ${status.label}`, Number(hit.dataset.value).toLocaleString());
+    };
+    hit.addEventListener('pointerenter', onEnter);
+    hit.addEventListener('focus', onEnter);
+    hit.addEventListener('pointerleave', hideTooltip);
+    hit.addEventListener('blur', hideTooltip);
+  });
+}
+
+function renderDailyTable(days) {
+  const tbody = document.getElementById('dailyTable');
+  tbody.innerHTML = '';
+  days.slice().reverse().forEach((d) => {
+    const tr = document.createElement('tr');
+    const cells = [d.date, d.success, d.error, d.restart, d.success + d.error + d.restart];
+    cells.forEach((val, i) => {
+      const td = document.createElement('td');
+      if (i > 0) td.className = 'num';
+      td.textContent = typeof val === 'number' ? val.toLocaleString() : val;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDomains(byDomain) {
+  const rows = Object.entries(byDomain).map(([domain, s]) => ({
+    domain, ...s, total: s.success + s.error + s.restart,
+  })).sort((a, b) => b.total - a.total);
+
+  const barsEl = document.getElementById('domainBars');
+  barsEl.innerHTML = '';
+
+  if (!rows.length) {
+    barsEl.innerHTML = '<div class="empty">No renders in this range yet.</div>';
+  } else {
+    const top = rows.slice(0, 8);
+    const max = Math.max(1, ...top.map((r) => r.total));
+
+    top.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'domain-bar-row';
+
+      const name = document.createElement('div');
+      name.className = 'domain-name';
+      name.textContent = r.domain;
+      name.title = r.domain;
+
+      const track = document.createElement('div');
+      track.className = 'domain-track';
+      ['success', 'error', 'restart'].forEach((status) => {
+        const val = r[status];
+        if (!val) return;
+        const seg = document.createElement('div');
+        seg.className = 'domain-seg hit';
+        seg.style.width = (val / max) * 100 + '%';
+        seg.style.background = STATUS[status].hex;
+        seg.tabIndex = 0;
+        const enter = (e) => {
+          const rect = seg.getBoundingClientRect();
+          showTooltip(rect.left, rect.top, `${r.domain} · ${STATUS[status].label}`, val.toLocaleString());
+        };
+        seg.addEventListener('pointerenter', enter);
+        seg.addEventListener('focus', enter);
+        seg.addEventListener('pointerleave', hideTooltip);
+        seg.addEventListener('blur', hideTooltip);
+        track.appendChild(seg);
+      });
+
+      row.appendChild(name);
+      row.appendChild(track);
+      barsEl.appendChild(row);
+    });
+  }
+
+  const tbody = document.getElementById('domainTable');
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">No data yet.</td></tr>';
+    return;
+  }
+  rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    const domainTd = document.createElement('td');
+    domainTd.textContent = r.domain;
+    tr.appendChild(domainTd);
+    [r.total, r.success, r.error, r.restart].forEach((val) => {
+      const td = document.createElement('td');
+      td.className = 'num';
+      td.textContent = val.toLocaleString();
+      tr.appendChild(td);
+    });
+    const rateTd = document.createElement('td');
+    rateTd.className = 'num';
+    rateTd.textContent = r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%';
+    tr.appendChild(rateTd);
+    tbody.appendChild(tr);
+  });
+}
+
+function badgeIcon(status) {
+  if (status === 'success') return '<circle cx="6" cy="6" r="5.5" fill="var(--status-good)"/><path d="M3.5 6.2l1.6 1.6L8.5 4" stroke="white" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>';
+  if (status === 'restart') return '<path d="M6 0.8l5.4 9.4H0.6z" fill="var(--status-warning)"/>';
+  return '<circle cx="6" cy="6" r="5.5" fill="var(--status-critical)"/><path d="M4 4l4 4m0-4l-4 4" stroke="white" stroke-width="1.3" stroke-linecap="round"/>';
+}
+
+function renderRecent(events) {
+  const tbody = document.getElementById('recent');
+  tbody.innerHTML = '';
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">Nothing in this range.</td></tr>';
+    return;
+  }
+  events.slice(0, 50).forEach((e) => {
+    const tr = document.createElement('tr');
+
+    const timeTd = document.createElement('td');
+    timeTd.textContent = e.timestamp.replace('T', ' ').slice(0, 19);
+    tr.appendChild(timeTd);
+
+    const typeTd = document.createElement('td');
+    const status = statusOf(e.type);
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 12 12');
+    svg.innerHTML = badgeIcon(status);
+    const label = document.createElement('span');
+    label.textContent = e.type;
+    badge.appendChild(svg);
+    badge.appendChild(label);
+    typeTd.appendChild(badge);
+    tr.appendChild(typeTd);
+
+    const urlTd = document.createElement('td');
+    urlTd.className = 'url';
+    urlTd.textContent = e.url || '';
+    urlTd.title = e.url || '';
+    tr.appendChild(urlTd);
+
+    const clientTd = document.createElement('td');
+    clientTd.textContent = e.ip || '';
+    const uaBits = [e.userAgent, e.referer].filter(Boolean).join(' · ');
+    if (uaBits) clientTd.title = uaBits;
+    tr.appendChild(clientTd);
+
+    const detailTd = document.createElement('td');
+    detailTd.textContent = (e.error || e.reason || '').slice(0, 140);
+    tr.appendChild(detailTd);
+
+    tbody.appendChild(tr);
+  });
+}
+
+document.querySelectorAll('.filters button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filters button').forEach((b) => b.setAttribute('aria-pressed', 'false'));
+    btn.setAttribute('aria-pressed', 'true');
+    rangeDays = Number(btn.dataset.range);
+    render();
+  });
+});
+
+document.getElementById('dailyToggle').addEventListener('click', (e) => {
+  const chart = document.querySelector('.chart-scroll');
+  const table = document.getElementById('dailyTableWrap');
+  const showingTable = table.style.display !== 'none';
+  table.style.display = showingTable ? 'none' : 'block';
+  chart.style.display = showingTable ? 'block' : 'none';
+  e.target.textContent = showingTable ? 'View as table' : 'View as chart';
+});
+
+let refreshTimer = null;
+
+function setRefreshInterval(ms) {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = ms > 0 ? setInterval(load, ms) : null;
+}
+
+document.getElementById('refreshInterval').addEventListener('change', (e) => {
+  setRefreshInterval(Number(e.target.value));
+});
+
+load();
+setRefreshInterval(Number(document.getElementById('refreshInterval').value));
+</script>
+</body>
+</html>

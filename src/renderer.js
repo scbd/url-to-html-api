@@ -14,6 +14,48 @@ const inflightRequests = {};
 
 const sleep = (timeout)=>new Promise((resolve) => setTimeout(resolve, timeout));
 
+const STATS_URL = process.env.STATS_URL || 'http://stats:7200';
+
+function reportEvent(type, payload){
+    fetch(`${STATS_URL}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, ...payload }),
+        signal: AbortSignal.timeout(2000)
+    }).catch((e)=>{
+        log(`Failed to report stats event to ${STATS_URL}`, e ? e.toString() : 'unknown');
+    });
+}
+
+function clientIp(req){
+    const xff = req.headers['x-forwarded-for'];
+    if(xff){
+        // chain is [client-supplied..., realViewerIP (added by CloudFront), edgeIP (added by our nginx)]
+        const ips = xff.split(',').map(ip => ip.trim()).filter(Boolean);
+        if(ips.length >= 2) return ips[ips.length - 2];
+        if(ips.length === 1) return ips[0];
+    }
+    return req.headers['x-real-ip'] || req.socket?.remoteAddress || 'unknown';
+}
+
+function requesterInfo(req){
+    return {
+        ip: clientIp(req),
+        userAgent: req.headers['user-agent'] || 'unknown',
+        referer: req.headers['referer'] || req.headers['referrer'] || '',
+        country: req.headers['cloudfront-viewer-country'] || ''
+    };
+}
+
+function safeHostname(clientUrl){
+    try{
+        return new url.URL(clientUrl).hostname;
+    }
+    catch(e){
+        return 'unknown';
+    }
+}
+
 async function initializeChrome(){
     if(!browser){
         let chromeFlags = [
@@ -33,10 +75,12 @@ async function initializeChrome(){
         log('initializing chrome');
 
         const chromeOptions = {
-            args: chromeFlags,            
+            args: chromeFlags,
             headless,
+            handleSIGTERM: false,
+            handleSIGINT: false,
             // ignoreHTTPSErrors: true,
-            // sloMo: config.DEBUG_MODE ? 250 : undefined,        
+            // sloMo: config.DEBUG_MODE ? 250 : undefined,
         }
 
         browser = await puppeteer.launch(chromeOptions)
@@ -83,7 +127,8 @@ async function renderUrl (req, res){
                 url         : clientUrl,
                 requestDate : new Date(),
                 status : 'request',
-                numberOfChecks : 0
+                numberOfChecks : 0,
+                ...requesterInfo(req)
             };
         }
 
@@ -111,6 +156,7 @@ async function renderUrl (req, res){
     }
     catch(e){
         logError(`Request error for ${clientUrl}`, inflightRequests[clientUrl], e)
+        reportEvent('request_error', { url: clientUrl, domain: safeHostname(clientUrl), error: e ? e.toString() : 'unknown', ...requesterInfo(req) });
         return res.status(500).send('Internal server error');
     }
     finally{
@@ -179,7 +225,13 @@ async function processInflightRequest(){
                 log(`process inflight running, ${Object.keys(inflightRequests)?.length}`);
 
                 if(restartBrowser){
-                    await restartChrome()
+                    try{
+                        await restartChrome()
+                    }
+                    catch(e){
+                        logError('Error restarting chrome', e);
+                        reportEvent('restart_error', { error: e ? e.toString() : 'unknown' });
+                    }
                 }
 
                 const canProcessRequest = await hasFreeTabs();
@@ -218,12 +270,12 @@ async function hasFreeTabs(){
 
     let numberOfOpenPages = (await browser.pages()).length
     let waitedSeconds = 0
-    if(numberOfOpenPages > 10){
-        log(`number of inflight request have reached limit, ${numberOfOpenPages}. 
+    if(numberOfOpenPages > 4){
+        log(`number of inflight request have reached limit, ${numberOfOpenPages}.
             no of inflight request ${Object.keys(inflightRequests)?.length}.
             waitedSeconds : ${waitedSeconds}`);
-       
-        while(numberOfOpenPages > 10){
+
+        while(numberOfOpenPages > 4){
             await sleep(1000);
             waitedSeconds += 1000;
             numberOfOpenPages = (await browser.pages()).length
@@ -427,7 +479,8 @@ async function renderHtml (urlRequest){
             urlRequest.content = pageContent;
             urlRequest.renderFinishedOn = new Date();
 
-            
+            reportEvent('render_success', { url: clientUrl, domain: htmlUrl.hostname, durationMs: (+new Date())-startTime });
+
     } catch (err) {
         
         const errorMessage = err ? err.toString() : 'noerror';
@@ -440,10 +493,27 @@ async function renderHtml (urlRequest){
 
         urlRequest.status = 'error';
 
-        if(errorMessage.indexOf('TimeoutError')>=0 || errorMessage.indexOf('timed out')>=0){
-            restartBrowser = true;
-            log('Request set to restart browser')
-        }
+        reportEvent('render_error', {
+            url: clientUrl,
+            domain: safeHostname(clientUrl),
+            error: errorMessage,
+            ip: urlRequest.ip,
+            userAgent: urlRequest.userAgent,
+            referer: urlRequest.referer,
+            country: urlRequest.country
+        });
+
+        restartBrowser = true;
+        log('Request set to restart browser')
+        reportEvent('browser_restart', {
+            url: clientUrl,
+            domain: safeHostname(clientUrl),
+            reason: errorMessage,
+            ip: urlRequest.ip,
+            userAgent: urlRequest.userAgent,
+            referer: urlRequest.referer,
+            country: urlRequest.country
+        });
     }
     finally{
         if(page){
@@ -575,7 +645,12 @@ function updateBaseUrl(content, baseUrl){
     return content;
 }
 
+function getInflightCount(){
+    return Object.keys(inflightRequests).length;
+}
+
 module.exports = {
     renderUrl,
-    processInflightRequest
+    processInflightRequest,
+    getInflightCount
 }
