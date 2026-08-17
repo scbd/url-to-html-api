@@ -440,7 +440,7 @@ async function renderHtml (urlRequest){
 
         urlRequest.status = 'error';
 
-        if(errorMessage.indexOf('TimeoutError')>=0){
+        if(errorMessage.indexOf('TimeoutError')>=0 || errorMessage.indexOf('timed out')>=0){
             restartBrowser = true;
             log('Request set to restart browser')
         }
