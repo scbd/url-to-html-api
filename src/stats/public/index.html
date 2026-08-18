@@ -66,6 +66,16 @@
     border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
     cursor: pointer;
   }
+  .filters.secondary { margin-top: 8px; flex-wrap: wrap; gap: 14px; }
+  .filter-label { font-size: 12.5px; color: var(--text-muted); }
+  .filter-group { display: flex; align-items: center; gap: 8px; }
+  .filter-divider { width: 1px; height: 20px; background: var(--gridline); flex: none; }
+  .segmented { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .filters .segmented button {
+    border: none; border-right: 1px solid var(--border); border-radius: 0;
+  }
+  .filters .segmented button:last-child { border-right: none; }
+  .filters .segmented button[aria-pressed="true"] { background: var(--hover-wash); }
 
   .card {
     background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
@@ -102,6 +112,7 @@
   td.url { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
   .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-secondary); }
   .badge svg { width: 12px; height: 12px; flex: none; }
+  .client-ua { font-size: 11px; color: var(--text-muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .domain-bar-row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 10px; padding: 5px 0; }
   .domain-name { font-size: 12.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .domain-track { height: 16px; border-radius: 3px; overflow: hidden; display: flex; background: var(--gridline); }
@@ -123,102 +134,210 @@
 </style>
 </head>
 <body>
-  <h1>Prerender activity</h1>
-  <div class="sub" id="sub"></div>
+  <div id="app">
+    <h1>Prerender activity</h1>
+    <div class="sub">up to {{ retentionDays }} days retained</div>
 
-  <div class="filters" role="group" aria-label="Date range">
-    <button data-range="1" aria-pressed="true">1 day</button>
-    <button data-range="3">3 days</button>
-    <button data-range="5">5 days</button>
-    <button data-range="7">7 days</button>
-    <button data-range="14">14 days</button>
-    <button data-range="30">30 days</button>
-    <label class="refresh-label" for="refreshInterval">Refresh</label>
-    <select id="refreshInterval">
-      <option value="0">Off</option>
-      <option value="3000">3s</option>
-      <option value="5000" selected>5s</option>
-      <option value="10000">10s</option>
-      <option value="30000">30s</option>
-      <option value="60000">1m</option>
-      <option value="300000">5m</option>
-    </select>
-  </div>
+    <div class="filters" role="group" aria-label="Date range">
+      <button v-for="r in RANGE_OPTIONS" :key="r" :aria-pressed="rangeDays === r" @click="rangeDays = r">{{ rangeLabel(r) }}</button>
+      <label class="refresh-label" for="refreshInterval">Refresh</label>
+      <select id="refreshInterval" v-model.number="refreshMs">
+        <option :value="0">Off</option>
+        <option :value="3000">3s</option>
+        <option :value="5000">5s</option>
+        <option :value="10000">10s</option>
+        <option :value="30000">30s</option>
+        <option :value="60000">1m</option>
+        <option :value="300000">5m</option>
+      </select>
+    </div>
 
-  <h2>Overview</h2>
-  <div class="kpis" id="kpis"></div>
-
-  <h2>Renders per day</h2>
-  <div class="card chart-card">
-    <div class="chart-head">
-      <div class="legend">
-        <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-good)"/><path d="M5 8.3l2 2 4-4.4" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Success</span>
-        <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-critical)"/><path d="M5.5 5.5l5 5m0-5l-5 5" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>Error</span>
-        <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="var(--status-warning)"/><rect x="7.3" y="6" width="1.4" height="4.2" fill="var(--text-primary)"/><rect x="7.3" y="11" width="1.4" height="1.4" fill="var(--text-primary)"/></svg>Restart</span>
+    <div class="filters secondary" role="group" aria-label="Breakdown filters">
+      <div class="filter-group">
+        <label class="filter-label" for="domainFilter">Domain</label>
+        <select id="domainFilter" v-model="domainFilter">
+          <option value="">All domains</option>
+          <option v-for="d in domains" :key="d" :value="d">{{ d }}</option>
+        </select>
       </div>
-      <button class="toggle-view" id="dailyToggle">View as table</button>
+      <span class="filter-divider"></span>
+      <div class="filter-group">
+        <span class="filter-label">Status</span>
+        <div class="segmented" role="group" aria-label="Status">
+          <button v-for="s in STATUS_KEYS" :key="s" :aria-pressed="statusFilter.has(s)" @click="toggleStatus(s)">{{ STATUS[s].label }}</button>
+        </div>
+        <button class="toggle-view" type="button" @click="resetStatus">Reset</button>
+      </div>
+      <span class="filter-divider"></span>
+      <div class="filter-group">
+        <span class="filter-label">Traffic</span>
+        <div class="segmented" role="group" aria-label="Bot traffic">
+          <button :aria-pressed="botFilter === 'all'" @click="botFilter = 'all'">All</button>
+          <button :aria-pressed="botFilter === 'bot'" @click="botFilter = 'bot'">Bots</button>
+          <button :aria-pressed="botFilter === 'human'" @click="botFilter = 'human'">Humans</button>
+        </div>
+      </div>
     </div>
-    <div class="chart-scroll"><div id="dailyChart"></div></div>
-    <div id="dailyTableWrap" style="display:none">
-      <table>
-        <thead><tr><th>Date</th><th class="num">Success</th><th class="num">Error</th><th class="num">Restart</th><th class="num">Total</th></tr></thead>
-        <tbody id="dailyTable"></tbody>
-      </table>
+
+    <h2>Overview</h2>
+    <div class="kpis">
+      <div class="card tile" v-for="k in kpis" :key="k.label">
+        <div class="tile-label">{{ k.label }}</div>
+        <div class="tile-value" :class="k.cls">{{ k.value }}</div>
+        <div class="tile-foot" v-if="k.spark"><div v-html="k.spark"></div></div>
+      </div>
+    </div>
+
+    <h2>Renders per day</h2>
+    <div class="card chart-card">
+      <div class="chart-head">
+        <div class="legend">
+          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-good)"/><path d="M5 8.3l2 2 4-4.4" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Success</span>
+          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-critical)"/><path d="M5.5 5.5l5 5m0-5l-5 5" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>Error</span>
+          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="var(--status-warning)"/><rect x="7.3" y="6" width="1.4" height="4.2" fill="var(--text-primary)"/><rect x="7.3" y="11" width="1.4" height="1.4" fill="var(--text-primary)"/></svg>Restart</span>
+          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--series-blue)"/><path d="M4.5 8.5c1-1.6 2.1-1.6 3.1 0s2.1 1.6 3.1 0" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>Soft error</span>
+        </div>
+        <button class="toggle-view" @click="showDailyTable = !showDailyTable">{{ showDailyTable ? 'View as chart' : 'View as table' }}</button>
+      </div>
+      <div class="chart-scroll" v-show="!showDailyTable">
+        <div v-if="dailyChart.empty" class="empty">No renders in this range yet.</div>
+        <svg v-else :width="dailyChart.width" :height="dailyChart.height" role="img" aria-label="Renders per day, stacked by outcome">
+          <line x1="0" :y1="dailyChart.plotH" :x2="dailyChart.width" :y2="dailyChart.plotH" stroke="var(--baseline)" stroke-width="1"/>
+          <rect v-for="(r, i) in dailyChart.fillRects" :key="'f' + i" class="bar-seg" :x="r.x" :y="r.y" :width="r.width" :height="r.height" :rx="r.rx" :ry="r.rx" :fill="r.fill"/>
+          <rect
+            v-for="(r, i) in dailyChart.hitRects" :key="'h' + i" class="hit" tabindex="0"
+            :x="r.x" :y="r.y" :width="r.width" :height="r.height"
+            @pointerenter="showTip($event, r.date + ' · ' + STATUS[r.status].label, r.value.toLocaleString())"
+            @focus="showTip($event, r.date + ' · ' + STATUS[r.status].label, r.value.toLocaleString())"
+            @pointerleave="hideTip" @blur="hideTip"
+          />
+          <text v-for="(l, i) in dailyChart.labels" :key="'l' + i" :x="l.x" :y="dailyChart.height" text-anchor="middle">{{ l.text }}</text>
+        </svg>
+      </div>
+      <div v-show="showDailyTable">
+        <table>
+          <thead><tr><th>Date</th><th class="num">Success</th><th class="num">Error</th><th class="num">Restart</th><th class="num">Soft error</th><th class="num">Total</th></tr></thead>
+          <tbody>
+            <tr v-for="d in dailyTableRows" :key="d.date">
+              <td>{{ d.date }}</td>
+              <td class="num">{{ d.success.toLocaleString() }}</td>
+              <td class="num">{{ d.error.toLocaleString() }}</td>
+              <td class="num">{{ d.restart.toLocaleString() }}</td>
+              <td class="num">{{ d.soft_error.toLocaleString() }}</td>
+              <td class="num">{{ d.total.toLocaleString() }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h2>By domain</h2>
+    <div class="card chart-card">
+      <div v-if="!domainBarVM.length" class="empty">No renders in this range yet.</div>
+      <div v-else>
+        <div class="domain-bar-row" v-for="row in domainBarVM" :key="row.domain">
+          <div class="domain-name" :title="row.domain">{{ row.domain }}</div>
+          <div class="domain-track">
+            <div
+              v-for="seg in row.segments" :key="seg.status" class="domain-seg hit" tabindex="0"
+              :style="{ width: seg.pct + '%', background: seg.color }"
+              @pointerenter="showTip($event, row.domain + ' · ' + STATUS[seg.status].label, seg.value.toLocaleString())"
+              @focus="showTip($event, row.domain + ' · ' + STATUS[seg.status].label, seg.value.toLocaleString())"
+              @pointerleave="hideTip" @blur="hideTip"
+            ></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <table style="margin-top:12px">
+      <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
+      <tbody>
+        <tr v-if="!domainRows.length"><td colspan="7" class="empty">No data yet.</td></tr>
+        <tr v-for="r in domainRows" :key="r.domain">
+          <td>{{ r.domain }}</td>
+          <td class="num">{{ r.total.toLocaleString() }}</td>
+          <td class="num">{{ r.success.toLocaleString() }}</td>
+          <td class="num">{{ r.error.toLocaleString() }}</td>
+          <td class="num">{{ r.restart.toLocaleString() }}</td>
+          <td class="num">{{ r.soft_error.toLocaleString() }}</td>
+          <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>By bot</h2>
+    <table>
+      <thead><tr><th>Bot</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
+      <tbody>
+        <tr v-if="!botRows.length"><td colspan="7" class="empty">No bot traffic in this range.</td></tr>
+        <tr v-for="r in botRows" :key="r.bot">
+          <td>{{ r.bot }}</td>
+          <td class="num">{{ r.total.toLocaleString() }}</td>
+          <td class="num">{{ r.success.toLocaleString() }}</td>
+          <td class="num">{{ r.error.toLocaleString() }}</td>
+          <td class="num">{{ r.restart.toLocaleString() }}</td>
+          <td class="num">{{ r.soft_error.toLocaleString() }}</td>
+          <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Recent errors &amp; restarts</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr v-if="!filteredRecent.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
+        <tr v-for="(e, i) in filteredRecent" :key="i">
+          <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+          <td>
+            <span class="badge">
+              <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
+              <span>{{ e.type }}</span>
+            </span>
+          </td>
+          <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+          <td>
+            <div>{{ e.ip || '' }}</div>
+            <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
+          </td>
+          <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div id="tooltip" role="tooltip" :class="{ show: tooltip.show }" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+      <div class="tt-label">{{ tooltip.label }}</div>
+      <div class="tt-value">{{ tooltip.value }}</div>
     </div>
   </div>
 
-  <h2>By domain</h2>
-  <div class="card chart-card">
-    <div id="domainBars"></div>
-  </div>
-  <table style="margin-top:12px">
-    <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Error rate</th></tr></thead>
-    <tbody id="domainTable"></tbody>
-  </table>
-
-  <h2>Recent errors &amp; restarts</h2>
-  <table>
-    <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
-    <tbody id="recent"></tbody>
-  </table>
-
-  <div id="tooltip" role="tooltip"></div>
-
+<script src="https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js"></script>
 <script>
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch } = Vue;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const STATUS = {
-  success: { color: 'var(--status-good)', hex: '#0ca30c', label: 'Success' },
-  error:   { color: 'var(--status-critical)', hex: '#d03b3b', label: 'Error' },
-  restart: { color: 'var(--status-warning)', hex: '#fab219', label: 'Restart' },
+  success:    { color: 'var(--status-good)', hex: '#0ca30c', label: 'Success' },
+  error:      { color: 'var(--status-critical)', hex: '#d03b3b', label: 'Error' },
+  restart:    { color: 'var(--status-warning)', hex: '#fab219', label: 'Restart' },
+  soft_error: { color: 'var(--series-blue)', hex: '#2a78d6', label: 'Soft error' },
 };
+const STATUS_KEYS = ['success', 'error', 'restart', 'soft_error'];
+const RANGE_OPTIONS = [1, 3, 5, 7, 14, 30];
 
-let rawCounts = [];
-let rawRecent = [];
-let retentionDays = 30;
-let rangeDays = 1;
+const KNOWN_TOOLS = [
+  [/postmanruntime/i, 'Postman'], [/^curl\//i, 'curl'], [/python-requests/i, 'python-requests'],
+  [/node-fetch/i, 'node-fetch'], [/axios/i, 'axios'], [/go-http-client/i, 'Go http client'],
+  [/okhttp/i, 'okhttp'], [/wget/i, 'wget'],
+];
 
-const tooltip = document.getElementById('tooltip');
-
-function showTooltip(x, y, label, value) {
-  tooltip.innerHTML = '';
-  const l = document.createElement('div');
-  l.className = 'tt-label';
-  l.textContent = label;
-  const v = document.createElement('div');
-  v.className = 'tt-value';
-  v.textContent = value;
-  tooltip.appendChild(l);
-  tooltip.appendChild(v);
-  tooltip.style.left = (x + 12) + 'px';
-  tooltip.style.top = (y + 12) + 'px';
-  tooltip.classList.add('show');
-}
-function hideTooltip() { tooltip.classList.remove('show'); }
+function rangeLabel(n) { return n === 1 ? '1 day' : `${n} days`; }
 
 function statusOf(type) {
   if (type === 'render_success') return 'success';
   if (type === 'browser_restart') return 'restart';
+  if (type === 'soft_404') return 'soft_error';
   return 'error';
 }
 
@@ -229,53 +348,25 @@ function formatCompact(n) {
 }
 
 function isoDay(d) { return d.toISOString().slice(0, 10); }
+function cutoffDay(days) { return isoDay(new Date(Date.now() - (days - 1) * DAY_MS)); }
 
-function cutoffDay(days) {
-  const d = new Date(Date.now() - (days - 1) * DAY_MS);
-  return isoDay(d);
+function cleanPatternLabel(pattern) {
+  return pattern
+    .replace(/\[([A-Za-z])[A-Za-z]\]/g, '$1')
+    .replace(/\\\//g, '/')
+    .replace(/\\\./g, '.')
+    .replace(/^\^/, '')
+    .replace(/\$$/, '')
+    .replace(/\/$/, '')
+    .trim();
 }
 
-async function load() {
-  const res = await fetch('http://localhost:7200/api/stats');
-  const data = await res.json();
-  rawCounts = data.counts;
-  rawRecent = data.recent;
-  retentionDays = data.retentionDays;
-  document.getElementById('sub').textContent = `up to ${retentionDays} days retained`;
-  render();
-}
-
-function render() {
-  const cutoff = cutoffDay(rangeDays);
-  const rows = rawCounts.filter((r) => r.date >= cutoff);
-  const recent = rawRecent.filter((e) => e.timestamp.slice(0, 10) >= cutoff);
-
-  const byStatus = { success: 0, error: 0, restart: 0 };
-  const byDay = {};
-  const byDomain = {};
-
-  rows.forEach((r) => {
-    const status = statusOf(r.type);
-    byStatus[status] += r.n;
-
-    byDay[r.date] = byDay[r.date] || { success: 0, error: 0, restart: 0 };
-    byDay[r.date][status] += r.n;
-
-    byDomain[r.domain] = byDomain[r.domain] || { success: 0, error: 0, restart: 0 };
-    byDomain[r.domain][status] += r.n;
-  });
-
-  const days = [];
-  for (let i = rangeDays - 1; i >= 0; i--) {
-    const key = isoDay(new Date(Date.now() - i * DAY_MS));
-    days.push({ date: key, ...(byDay[key] || { success: 0, error: 0, restart: 0 }) });
-  }
-
-  renderKpis(byStatus, days);
-  renderDailyChart(days);
-  renderDailyTable(days);
-  renderDomains(byDomain);
-  renderRecent(recent);
+// Catches bots not in the vendored list: "compatible; XBot", "Xcrawler"/"Xspider", or a bare "XBot" token.
+function fallbackBotLabel(ua) {
+  const m = ua.match(/compatible;\s*([A-Za-z0-9_.-]+[Bb]ot[A-Za-z0-9_.-]*)/)
+    || ua.match(/([A-Za-z0-9_.-]*(?:crawler|spider)[A-Za-z0-9_.-]*)/i)
+    || ua.match(/\b([A-Za-z][A-Za-z0-9_-]*[Bb]ot)\b/);
+  return m ? m[1] : null;
 }
 
 function sparkline(values, accentHex) {
@@ -295,294 +386,277 @@ function sparkline(values, accentHex) {
   </svg>`;
 }
 
-function tile(label, value, cls, values, accentHex) {
-  const div = document.createElement('div');
-  div.className = 'card tile';
-  const l = document.createElement('div');
-  l.className = 'tile-label';
-  l.textContent = label;
-  const v = document.createElement('div');
-  v.className = 'tile-value' + (cls ? ' ' + cls : '');
-  v.textContent = value;
-  div.appendChild(l);
-  div.appendChild(v);
-  if (values) {
-    const foot = document.createElement('div');
-    foot.className = 'tile-foot';
-    foot.innerHTML = sparkline(values, accentHex);
-    div.appendChild(foot);
-  }
-  return div;
-}
-
-function renderKpis(byStatus, days) {
-  const total = byStatus.success + byStatus.error;
-  const rate = total ? (byStatus.success / total) * 100 : null;
-  const rateCls = rate === null ? '' : rate >= 98 ? 'good' : rate >= 90 ? 'warning' : 'critical';
-
-  const kpis = document.getElementById('kpis');
-  kpis.innerHTML = '';
-  kpis.appendChild(tile('Successful renders', formatCompact(byStatus.success), '', days.map((d) => d.success), STATUS.success.hex));
-  kpis.appendChild(tile('Render errors', formatCompact(byStatus.error), '', days.map((d) => d.error), STATUS.error.hex));
-  kpis.appendChild(tile('Browser restarts', formatCompact(byStatus.restart), byStatus.restart > 0 ? 'warning' : '', days.map((d) => d.restart), STATUS.restart.hex));
-  kpis.appendChild(tile('Success rate', rate === null ? '–' : rate.toFixed(1) + '%', rateCls));
-}
-
-function roundedTopSegment(x, w, y, h, fill) {
-  if (h <= 0) return '';
-  const r = Math.min(4, h / 2, w / 2);
-  return `<rect class="bar-seg" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}" fill="${fill}"/>
-          <rect x="${x}" y="${y + r}" width="${w}" height="${Math.max(0, h - r)}" fill="${fill}"/>`;
-}
-
-function renderDailyChart(days) {
-  const el = document.getElementById('dailyChart');
-  if (!days.some((d) => d.success + d.error + d.restart > 0)) {
-    el.innerHTML = '<div class="empty">No renders in this range yet.</div>';
-    return;
-  }
-
-  const slot = 26;
-  const barW = 18;
-  const gap = 2;
-  const w = Math.max(320, days.length * slot);
-  const h = 150;
-  const plotH = h - 18;
-  const max = Math.max(1, ...days.map((d) => d.success + d.error + d.restart));
-
-  let marks = '';
-  days.forEach((d, i) => {
-    const x = i * slot + (slot - barW) / 2;
-    const successH = (d.success / max) * plotH;
-    const errorH = (d.error / max) * plotH;
-    const restartH = (d.restart / max) * plotH;
-
-    let y = plotH;
-    const segs = [
-      ['success', d.success, successH],
-      ['error', d.error, errorH],
-      ['restart', d.restart, restartH],
-    ];
-    const topIndex = (() => {
-      for (let k = segs.length - 1; k >= 0; k--) if (segs[k][2] > 0) return k;
-      return -1;
-    })();
-
-    segs.forEach(([status, val, segH], idx) => {
-      if (segH <= 0) return;
-      const hasAbove = segs.slice(idx + 1).some((s) => s[2] > 0);
-      const topY = y - segH;
-      const drawY = hasAbove ? topY + gap : topY;
-      const drawH = Math.max(0, segH - (hasAbove ? gap : 0));
-      y = topY;
-
-      if (idx === topIndex) {
-        marks += roundedTopSegment(x, barW, drawY, drawH, STATUS[status].hex);
-      } else {
-        marks += `<rect class="bar-seg" x="${x}" y="${drawY}" width="${barW}" height="${drawH}" fill="${STATUS[status].hex}"/>`;
-      }
-      marks += `<rect class="hit" data-date="${d.date}" data-status="${status}" data-value="${val}" tabindex="0" x="${x}" y="${topY}" width="${barW}" height="${Math.max(segH, 6)}"/>`;
-    });
-
-    if (i % Math.max(1, Math.ceil(days.length / 10)) === 0) {
-      marks += `<text x="${x + barW / 2}" y="${h}" text-anchor="middle">${d.date.slice(5)}</text>`;
-    }
-  });
-
-  el.innerHTML = `<svg width="${w}" height="${h}" role="img" aria-label="Renders per day, stacked by outcome">
-    <line x1="0" y1="${plotH}" x2="${w}" y2="${plotH}" stroke="var(--baseline)" stroke-width="1"/>
-    ${marks}
-  </svg>`;
-
-  el.querySelectorAll('.hit').forEach((hit) => {
-    const onEnter = (e) => {
-      const rect = hit.getBoundingClientRect();
-      const status = STATUS[hit.dataset.status];
-      showTooltip(rect.left, rect.top, `${hit.dataset.date} · ${status.label}`, Number(hit.dataset.value).toLocaleString());
-    };
-    hit.addEventListener('pointerenter', onEnter);
-    hit.addEventListener('focus', onEnter);
-    hit.addEventListener('pointerleave', hideTooltip);
-    hit.addEventListener('blur', hideTooltip);
-  });
-}
-
-function renderDailyTable(days) {
-  const tbody = document.getElementById('dailyTable');
-  tbody.innerHTML = '';
-  days.slice().reverse().forEach((d) => {
-    const tr = document.createElement('tr');
-    const cells = [d.date, d.success, d.error, d.restart, d.success + d.error + d.restart];
-    cells.forEach((val, i) => {
-      const td = document.createElement('td');
-      if (i > 0) td.className = 'num';
-      td.textContent = typeof val === 'number' ? val.toLocaleString() : val;
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-}
-
-function renderDomains(byDomain) {
-  const rows = Object.entries(byDomain).map(([domain, s]) => ({
-    domain, ...s, total: s.success + s.error + s.restart,
-  })).sort((a, b) => b.total - a.total);
-
-  const barsEl = document.getElementById('domainBars');
-  barsEl.innerHTML = '';
-
-  if (!rows.length) {
-    barsEl.innerHTML = '<div class="empty">No renders in this range yet.</div>';
-  } else {
-    const top = rows.slice(0, 8);
-    const max = Math.max(1, ...top.map((r) => r.total));
-
-    top.forEach((r) => {
-      const row = document.createElement('div');
-      row.className = 'domain-bar-row';
-
-      const name = document.createElement('div');
-      name.className = 'domain-name';
-      name.textContent = r.domain;
-      name.title = r.domain;
-
-      const track = document.createElement('div');
-      track.className = 'domain-track';
-      ['success', 'error', 'restart'].forEach((status) => {
-        const val = r[status];
-        if (!val) return;
-        const seg = document.createElement('div');
-        seg.className = 'domain-seg hit';
-        seg.style.width = (val / max) * 100 + '%';
-        seg.style.background = STATUS[status].hex;
-        seg.tabIndex = 0;
-        const enter = (e) => {
-          const rect = seg.getBoundingClientRect();
-          showTooltip(rect.left, rect.top, `${r.domain} · ${STATUS[status].label}`, val.toLocaleString());
-        };
-        seg.addEventListener('pointerenter', enter);
-        seg.addEventListener('focus', enter);
-        seg.addEventListener('pointerleave', hideTooltip);
-        seg.addEventListener('blur', hideTooltip);
-        track.appendChild(seg);
-      });
-
-      row.appendChild(name);
-      row.appendChild(track);
-      barsEl.appendChild(row);
-    });
-  }
-
-  const tbody = document.getElementById('domainTable');
-  tbody.innerHTML = '';
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">No data yet.</td></tr>';
-    return;
-  }
-  rows.forEach((r) => {
-    const tr = document.createElement('tr');
-    const domainTd = document.createElement('td');
-    domainTd.textContent = r.domain;
-    tr.appendChild(domainTd);
-    [r.total, r.success, r.error, r.restart].forEach((val) => {
-      const td = document.createElement('td');
-      td.className = 'num';
-      td.textContent = val.toLocaleString();
-      tr.appendChild(td);
-    });
-    const rateTd = document.createElement('td');
-    rateTd.className = 'num';
-    rateTd.textContent = r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%';
-    tr.appendChild(rateTd);
-    tbody.appendChild(tr);
-  });
-}
-
 function badgeIcon(status) {
   if (status === 'success') return '<circle cx="6" cy="6" r="5.5" fill="var(--status-good)"/><path d="M3.5 6.2l1.6 1.6L8.5 4" stroke="white" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>';
   if (status === 'restart') return '<path d="M6 0.8l5.4 9.4H0.6z" fill="var(--status-warning)"/>';
+  if (status === 'soft_error') return '<circle cx="6" cy="6" r="5.5" fill="var(--series-blue)"/><path d="M3.2 6.3c0.75-1.2 1.6-1.2 2.35 0s1.6 1.2 2.35 0" stroke="white" stroke-width="1.2" fill="none" stroke-linecap="round"/>';
   return '<circle cx="6" cy="6" r="5.5" fill="var(--status-critical)"/><path d="M4 4l4 4m0-4l-4 4" stroke="white" stroke-width="1.3" stroke-linecap="round"/>';
 }
 
-function renderRecent(events) {
-  const tbody = document.getElementById('recent');
-  tbody.innerHTML = '';
-  if (!events.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">Nothing in this range.</td></tr>';
-    return;
-  }
-  events.slice(0, 50).forEach((e) => {
-    const tr = document.createElement('tr');
+createApp({
+  setup() {
+    const rawCounts = ref([]);
+    const rawRecent = ref([]);
+    const retentionDays = ref(30);
+    const rangeDays = ref(1);
+    const domainFilter = ref('');
+    const statusFilter = reactive(new Set(STATUS_KEYS));
+    const botFilter = ref('all'); // all | bot | human
+    const refreshMs = ref(5000);
+    const showDailyTable = ref(false);
+    const crawlerPatterns = ref([]);
+    const tooltip = reactive({ show: false, x: 0, y: 0, label: '', value: '' });
 
-    const timeTd = document.createElement('td');
-    timeTd.textContent = e.timestamp.replace('T', ' ').slice(0, 19);
-    tr.appendChild(timeTd);
+    function classifyUA(ua) {
+      if (!ua || ua === 'unknown') return null;
+      const known = crawlerPatterns.value.find((p) => p.re.test(ua));
+      if (known) return known.label;
+      return fallbackBotLabel(ua);
+    }
+    function isBotUA(ua) { return classifyUA(ua) !== null; }
 
-    const typeTd = document.createElement('td');
-    const status = statusOf(e.type);
-    const badge = document.createElement('span');
-    badge.className = 'badge';
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 12 12');
-    svg.innerHTML = badgeIcon(status);
-    const label = document.createElement('span');
-    label.textContent = e.type;
-    badge.appendChild(svg);
-    badge.appendChild(label);
-    typeTd.appendChild(badge);
-    tr.appendChild(typeTd);
+    function friendlyAgent(ua) {
+      if (!ua || ua === 'unknown') return '';
 
-    const urlTd = document.createElement('td');
-    urlTd.className = 'url';
-    urlTd.textContent = e.url || '';
-    urlTd.title = e.url || '';
-    tr.appendChild(urlTd);
+      const botLabel = classifyUA(ua);
+      if (botLabel) return botLabel;
 
-    const clientTd = document.createElement('td');
-    clientTd.textContent = e.ip || '';
-    const uaBits = [e.userAgent, e.referer].filter(Boolean).join(' · ');
-    if (uaBits) clientTd.title = uaBits;
-    tr.appendChild(clientTd);
+      for (const [re, name] of KNOWN_TOOLS) if (re.test(ua)) return name;
 
-    const detailTd = document.createElement('td');
-    detailTd.textContent = (e.error || e.reason || '').slice(0, 140);
-    tr.appendChild(detailTd);
+      let os = '';
+      if (/windows/i.test(ua)) os = 'Windows';
+      else if (/android/i.test(ua)) os = 'Android';
+      else if (/iphone|ipad|ios/i.test(ua)) os = 'iOS';
+      else if (/mac os x/i.test(ua)) os = 'Mac';
+      else if (/linux/i.test(ua)) os = 'Linux';
 
-    tbody.appendChild(tr);
-  });
-}
+      let browser = '';
+      if (/edg\//i.test(ua)) browser = 'Edge';
+      else if (/opr\/|opera/i.test(ua)) browser = 'Opera';
+      else if (/chrome\//i.test(ua)) browser = 'Chrome';
+      else if (/firefox\//i.test(ua)) browser = 'Firefox';
+      else if (/safari\//i.test(ua)) browser = 'Safari';
 
-document.querySelectorAll('.filters button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.filters button').forEach((b) => b.setAttribute('aria-pressed', 'false'));
-    btn.setAttribute('aria-pressed', 'true');
-    rangeDays = Number(btn.dataset.range);
-    render();
-  });
-});
+      if (browser && os) return `${browser} · ${os}`;
+      return browser || os || ua.slice(0, 60);
+    }
 
-document.getElementById('dailyToggle').addEventListener('click', (e) => {
-  const chart = document.querySelector('.chart-scroll');
-  const table = document.getElementById('dailyTableWrap');
-  const showingTable = table.style.display !== 'none';
-  table.style.display = showingTable ? 'none' : 'block';
-  chart.style.display = showingTable ? 'block' : 'none';
-  e.target.textContent = showingTable ? 'View as table' : 'View as chart';
-});
+    const cutoff = computed(() => cutoffDay(rangeDays.value));
 
-let refreshTimer = null;
+    const domains = computed(() => Array.from(new Set(rawCounts.value.map((r) => r.domain))).sort());
 
-function setRefreshInterval(ms) {
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = ms > 0 ? setInterval(load, ms) : null;
-}
+    const aggregates = computed(() => {
+      const cutoffVal = cutoff.value;
+      const rows = rawCounts.value.filter((r) => (
+        r.date >= cutoffVal
+        && (!domainFilter.value || r.domain === domainFilter.value)
+        && statusFilter.has(statusOf(r.type))
+        && (botFilter.value === 'all' || (botFilter.value === 'bot') === !!r.bot)
+      ));
 
-document.getElementById('refreshInterval').addEventListener('change', (e) => {
-  setRefreshInterval(Number(e.target.value));
-});
+      const emptyBucket = () => ({ success: 0, error: 0, restart: 0, soft_error: 0 });
+      const byStatus = emptyBucket();
+      const byDay = {};
+      const byDomain = {};
+      const byBot = {};
+      let botTotal = 0;
+      let grandTotal = 0;
 
-load();
-setRefreshInterval(Number(document.getElementById('refreshInterval').value));
+      rows.forEach((r) => {
+        const status = statusOf(r.type);
+        byStatus[status] += r.n;
+        grandTotal += r.n;
+        if (r.bot) botTotal += r.n;
+
+        byDay[r.date] = byDay[r.date] || emptyBucket();
+        byDay[r.date][status] += r.n;
+
+        byDomain[r.domain] = byDomain[r.domain] || emptyBucket();
+        byDomain[r.domain][status] += r.n;
+
+        if (r.bot) {
+          byBot[r.bot] = byBot[r.bot] || emptyBucket();
+          byBot[r.bot][status] += r.n;
+        }
+      });
+
+      const days = [];
+      for (let i = rangeDays.value - 1; i >= 0; i--) {
+        const key = isoDay(new Date(Date.now() - i * DAY_MS));
+        days.push({ date: key, ...(byDay[key] || emptyBucket()) });
+      }
+
+      return { byStatus, days, byDomain, byBot, botTotal, grandTotal };
+    });
+
+    const filteredRecent = computed(() => {
+      const cutoffVal = cutoff.value;
+      return rawRecent.value.filter((e) => (
+        e.timestamp.slice(0, 10) >= cutoffVal
+        && (!domainFilter.value || e.domain === domainFilter.value)
+        && statusFilter.has(statusOf(e.type))
+        && (botFilter.value === 'all' || (botFilter.value === 'bot') === isBotUA(e.userAgent))
+      )).slice(0, 50);
+    });
+
+    const kpis = computed(() => {
+      const { byStatus, days, botTotal, grandTotal } = aggregates.value;
+      const total = byStatus.success + byStatus.error;
+      const rate = total ? (byStatus.success / total) * 100 : null;
+      const rateCls = rate === null ? '' : rate >= 98 ? 'good' : rate >= 90 ? 'warning' : 'critical';
+      const botPct = grandTotal ? (botTotal / grandTotal) * 100 : null;
+
+      return [
+        { label: 'Successful renders', value: formatCompact(byStatus.success), cls: '', spark: sparkline(days.map((d) => d.success), STATUS.success.hex) },
+        { label: 'Render errors', value: formatCompact(byStatus.error), cls: '', spark: sparkline(days.map((d) => d.error), STATUS.error.hex) },
+        { label: 'Soft errors', value: formatCompact(byStatus.soft_error), cls: '', spark: sparkline(days.map((d) => d.soft_error), STATUS.soft_error.hex) },
+        { label: 'Browser restarts', value: formatCompact(byStatus.restart), cls: byStatus.restart > 0 ? 'warning' : '', spark: sparkline(days.map((d) => d.restart), STATUS.restart.hex) },
+        { label: 'Success rate', value: rate === null ? '–' : rate.toFixed(1) + '%', cls: rateCls, spark: null },
+        { label: 'Bot traffic', value: botPct === null ? '–' : botPct.toFixed(1) + '%', cls: '', spark: null },
+      ];
+    });
+
+    const dailyTableRows = computed(() => aggregates.value.days.slice().reverse().map((d) => ({
+      ...d, total: d.success + d.error + d.restart + d.soft_error,
+    })));
+
+    const dailyChart = computed(() => {
+      const days = aggregates.value.days;
+      const hasData = days.some((d) => d.success + d.error + d.restart + d.soft_error > 0);
+      if (!hasData) return { empty: true, fillRects: [], hitRects: [], labels: [], width: 320, height: 150, plotH: 132 };
+
+      const slot = 26, barW = 18, gap = 2;
+      const width = Math.max(320, days.length * slot);
+      const height = 150;
+      const plotH = height - 18;
+      const max = Math.max(1, ...days.map((d) => d.success + d.error + d.restart + d.soft_error));
+      const minLabelGap = 36;
+      const labelStep = Math.max(1, Math.ceil(minLabelGap / slot));
+
+      const fillRects = [];
+      const hitRects = [];
+      const labels = [];
+
+      days.forEach((d, i) => {
+        const x = i * slot + (slot - barW) / 2;
+        const segs = [
+          ['success', d.success], ['error', d.error], ['soft_error', d.soft_error], ['restart', d.restart],
+        ].map(([status, val]) => [status, val, (val / max) * plotH]);
+
+        let y = plotH;
+        const topIndex = (() => {
+          for (let k = segs.length - 1; k >= 0; k--) if (segs[k][2] > 0) return k;
+          return -1;
+        })();
+
+        segs.forEach(([status, val, segH], idx) => {
+          if (segH <= 0) return;
+          const hasAbove = segs.slice(idx + 1).some((s) => s[2] > 0);
+          const topY = y - segH;
+          const drawY = hasAbove ? topY + gap : topY;
+          const drawH = Math.max(0, segH - (hasAbove ? gap : 0));
+          y = topY;
+
+          const fill = STATUS[status].hex;
+          if (idx === topIndex && drawH > 0) {
+            // Rounded-top bar: a small rounded rect on top, then a plain rect squares off the bottom
+            // so only the top corners of the stack appear rounded.
+            const r = Math.min(4, drawH / 2, barW / 2);
+            fillRects.push({ x, y: drawY, width: barW, height: drawH, rx: r, fill });
+            fillRects.push({ x, y: drawY + r, width: barW, height: Math.max(0, drawH - r), rx: 0, fill });
+          } else {
+            fillRects.push({ x, y: drawY, width: barW, height: drawH, rx: 0, fill });
+          }
+
+          hitRects.push({ x, y: topY, width: barW, height: Math.max(segH, 6), date: d.date, status, value: val });
+        });
+
+        if ((days.length - 1 - i) % labelStep === 0) {
+          labels.push({ x: x + barW / 2, text: d.date.slice(5) });
+        }
+      });
+
+      return { empty: false, width, height, plotH, fillRects, hitRects, labels };
+    });
+
+    const domainRows = computed(() => Object.entries(aggregates.value.byDomain).map(([domain, s]) => ({
+      domain, ...s, total: s.success + s.error + s.restart + s.soft_error,
+    })).sort((a, b) => b.total - a.total));
+
+    const domainBarVM = computed(() => {
+      const top = domainRows.value.slice(0, 8);
+      const max = Math.max(1, ...top.map((r) => r.total));
+      return top.map((r) => ({
+        domain: r.domain,
+        segments: ['success', 'error', 'soft_error', 'restart']
+          .filter((s) => r[s])
+          .map((s) => ({ status: s, pct: (r[s] / max) * 100, color: STATUS[s].hex, value: r[s] })),
+      }));
+    });
+
+    const botRows = computed(() => Object.entries(aggregates.value.byBot).map(([bot, s]) => ({
+      bot, ...s, total: s.success + s.error + s.restart + s.soft_error,
+    })).sort((a, b) => b.total - a.total));
+
+    function toggleStatus(status) {
+      if (statusFilter.has(status)) statusFilter.delete(status);
+      else statusFilter.add(status);
+    }
+    function resetStatus() {
+      statusFilter.clear();
+      STATUS_KEYS.forEach((s) => statusFilter.add(s));
+    }
+
+    function showTip(evt, label, value) {
+      const rect = evt.currentTarget.getBoundingClientRect();
+      tooltip.x = rect.left + 12;
+      tooltip.y = rect.top + 12;
+      tooltip.label = label;
+      tooltip.value = value;
+      tooltip.show = true;
+    }
+    function hideTip() { tooltip.show = false; }
+
+    async function loadCrawlerPatterns() {
+      try {
+        const res = await fetch('/crawler-user-agents.json');
+        const patterns = await res.json();
+        crawlerPatterns.value = patterns.map((p) => ({ re: new RegExp(p, 'i'), label: cleanPatternLabel(p) }));
+      } catch (e) {
+        crawlerPatterns.value = [];
+      }
+    }
+
+    async function loadStats() {
+      const res = await fetch('http://localhost:7200/api/stats');
+      const data = await res.json();
+      rawCounts.value = data.counts;
+      rawRecent.value = data.recent;
+      retentionDays.value = data.retentionDays;
+    }
+
+    let refreshTimer = null;
+    function setRefreshInterval(ms) {
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = ms > 0 ? setInterval(loadStats, ms) : null;
+    }
+    watch(refreshMs, (ms) => setRefreshInterval(ms), { immediate: true });
+    onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer); });
+
+    onMounted(async () => {
+      await loadCrawlerPatterns();
+      await loadStats();
+    });
+
+    return {
+      STATUS, STATUS_KEYS, RANGE_OPTIONS,
+      rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable,
+      retentionDays, domains, kpis, dailyTableRows, dailyChart, domainRows, domainBarVM, botRows, filteredRecent,
+      tooltip,
+      rangeLabel, toggleStatus, resetStatus, showTip, hideTip, statusOf, friendlyAgent, badgeIcon,
+    };
+  },
+}).mount('#app');
 </script>
 </body>
 </html>
