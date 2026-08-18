@@ -3,9 +3,12 @@ const express = require('express');
 const cors = require('cors');
 const store = require('./store');
 const { classifyUserAgent } = require('./botDetect');
+const slackReport = require('./slackReport');
 
 const PORT = Number(process.env.STATS_PORT) || 7200;
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SLACK_REPORT_HOUR_UTC = 8;
 
 const app = express();
 app.use(cors());
@@ -46,10 +49,18 @@ app.get('/api/stats', (req, res) => {
     });
   });
 
+  // Soft 404s are typically high-volume bot traffic; capping errors/restarts and
+  // soft 404s to one shared "last 200" window lets soft 404s crowd real errors out
+  // of the payload entirely, so each type gets its own window instead.
+  const allEvents = store.readEvents();
+  const recentErrors = allEvents.filter((e) => e.type !== 'soft_404').slice(-200).reverse();
+  const recentSoftErrors = allEvents.filter((e) => e.type === 'soft_404').slice(-200).reverse();
+
   res.json({
     retentionDays: store.RETENTION_DAYS,
     counts: rows,
-    recent: store.readEvents().slice(-200).reverse(),
+    recentErrors,
+    recentSoftErrors,
   });
 });
 
@@ -64,3 +75,29 @@ setInterval(() => {
   store.pruneOldCounts();
   console.log(`Pruned stats events, ${remaining} remaining`);
 }, PRUNE_INTERVAL_MS);
+
+function msUntilNextSlackReport() {
+  const now = new Date();
+  const next = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), SLACK_REPORT_HOUR_UTC, 0, 0, 0
+  ));
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  return next - now;
+}
+
+function runDailySlackReport() {
+  slackReport.sendDailyReport(PORT).catch((err) => console.error('Failed to send Slack stats report', err));
+}
+
+if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_CHANNEL_ID) {
+  setTimeout(() => {
+    runDailySlackReport();
+    setInterval(runDailySlackReport, DAY_MS);
+  }, msUntilNextSlackReport());
+
+  if (process.env.SLACK_TEST_MODE === 'true') {
+    const TEST_INTERVAL_MS = 60 * 60 * 1000;
+    runDailySlackReport();
+    setInterval(runDailySlackReport, TEST_INTERVAL_MS);
+  }
+}

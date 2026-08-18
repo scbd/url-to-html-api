@@ -286,8 +286,31 @@
     <table>
       <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
       <tbody>
-        <tr v-if="!filteredRecent.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
-        <tr v-for="(e, i) in filteredRecent" :key="i">
+        <tr v-if="!filteredErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
+        <tr v-for="(e, i) in filteredErrors" :key="i">
+          <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+          <td>
+            <span class="badge">
+              <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
+              <span>{{ e.type }}</span>
+            </span>
+          </td>
+          <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+          <td>
+            <div>{{ e.ip || '' }}</div>
+            <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
+          </td>
+          <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Recent soft 404s</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr v-if="!filteredSoftErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
+        <tr v-for="(e, i) in filteredSoftErrors" :key="i">
           <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
           <td>
             <span class="badge">
@@ -316,6 +339,11 @@
 const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch } = Vue;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Lets the automated daily snapshot render "as of" a past day (e.g. the day that just
+// ended) instead of live "now" — has no effect for normal browser visits.
+const ASOF_PARAM = new URLSearchParams(location.search).get('asOf');
+const NOW_MS = ASOF_PARAM ? new Date(`${ASOF_PARAM}T23:59:59.999Z`).getTime() : Date.now();
 
 const STATUS = {
   success:    { color: 'var(--status-good)', hex: '#0ca30c', label: 'Success' },
@@ -348,7 +376,7 @@ function formatCompact(n) {
 }
 
 function isoDay(d) { return d.toISOString().slice(0, 10); }
-function cutoffDay(days) { return isoDay(new Date(Date.now() - (days - 1) * DAY_MS)); }
+function cutoffDay(days) { return isoDay(new Date(NOW_MS - (days - 1) * DAY_MS)); }
 
 function cleanPatternLabel(pattern) {
   return pattern
@@ -396,7 +424,8 @@ function badgeIcon(status) {
 createApp({
   setup() {
     const rawCounts = ref([]);
-    const rawRecent = ref([]);
+    const rawErrors = ref([]);
+    const rawSoftErrors = ref([]);
     const retentionDays = ref(30);
     const rangeDays = ref(1);
     const domainFilter = ref('');
@@ -447,8 +476,10 @@ createApp({
 
     const aggregates = computed(() => {
       const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
       const rows = rawCounts.value.filter((r) => (
         r.date >= cutoffVal
+        && r.date <= nowDay
         && (!domainFilter.value || r.domain === domainFilter.value)
         && statusFilter.has(statusOf(r.type))
         && (botFilter.value === 'all' || (botFilter.value === 'bot') === !!r.bot)
@@ -482,22 +513,27 @@ createApp({
 
       const days = [];
       for (let i = rangeDays.value - 1; i >= 0; i--) {
-        const key = isoDay(new Date(Date.now() - i * DAY_MS));
+        const key = isoDay(new Date(NOW_MS - i * DAY_MS));
         days.push({ date: key, ...(byDay[key] || emptyBucket()) });
       }
 
       return { byStatus, days, byDomain, byBot, botTotal, grandTotal };
     });
 
-    const filteredRecent = computed(() => {
+    function withinRange(e) {
       const cutoffVal = cutoff.value;
-      return rawRecent.value.filter((e) => (
-        e.timestamp.slice(0, 10) >= cutoffVal
+      const nowDay = isoDay(new Date(NOW_MS));
+      return e.timestamp.slice(0, 10) >= cutoffVal
+        && e.timestamp.slice(0, 10) <= nowDay
         && (!domainFilter.value || e.domain === domainFilter.value)
         && statusFilter.has(statusOf(e.type))
-        && (botFilter.value === 'all' || (botFilter.value === 'bot') === isBotUA(e.userAgent))
-      )).slice(0, 50);
-    });
+        && (botFilter.value === 'all' || (botFilter.value === 'bot') === isBotUA(e.userAgent));
+    }
+
+    // Server sends errors/restarts and soft 404s as separate "last 200" windows so
+    // high-volume soft 404 bot traffic can't crowd real errors out of the payload.
+    const filteredErrors = computed(() => rawErrors.value.filter(withinRange).slice(0, 50));
+    const filteredSoftErrors = computed(() => rawSoftErrors.value.filter(withinRange).slice(0, 50));
 
     const kpis = computed(() => {
       const { byStatus, days, botTotal, grandTotal } = aggregates.value;
@@ -631,7 +667,8 @@ createApp({
       const res = await fetch('http://localhost:7200/api/stats');
       const data = await res.json();
       rawCounts.value = data.counts;
-      rawRecent.value = data.recent;
+      rawErrors.value = data.recentErrors || [];
+      rawSoftErrors.value = data.recentSoftErrors || [];
       retentionDays.value = data.retentionDays;
     }
 
@@ -651,7 +688,7 @@ createApp({
     return {
       STATUS, STATUS_KEYS, RANGE_OPTIONS,
       rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable,
-      retentionDays, domains, kpis, dailyTableRows, dailyChart, domainRows, domainBarVM, botRows, filteredRecent,
+      retentionDays, domains, kpis, dailyTableRows, dailyChart, domainRows, domainBarVM, botRows, filteredErrors, filteredSoftErrors,
       tooltip,
       rangeLabel, toggleStatus, resetStatus, showTip, hideTip, statusOf, friendlyAgent, badgeIcon,
     };
