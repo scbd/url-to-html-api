@@ -52,7 +52,7 @@ function clientIp(req){
 function requesterInfo(req){
     return {
         ip: clientIp(req),
-        userAgent: req.headers['user-agent'] || 'unknown',
+        userAgent: req.headers['x-origin-user-agent'] || req.headers['user-agent'] || 'unknown',
         referer: req.headers['referer'] || req.headers['referrer'] || '',
         country: req.headers['cloudfront-viewer-country'] || ''
     };
@@ -505,7 +505,7 @@ async function renderHtml (urlRequest){
             urlRequest.content = pageContent;
             urlRequest.renderFinishedOn = new Date();
 
-            reportEvent('render_success', { url: clientUrl, domain: htmlUrl.hostname, durationMs: (+new Date())-startTime });
+            reportEvent('render_success', { url: clientUrl, domain: htmlUrl.hostname, durationMs: (+new Date())-startTime, userAgent: urlRequest.userAgent });
 
     } catch (err) {
         

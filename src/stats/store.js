@@ -25,12 +25,16 @@ function saveCounts() {
   });
 }
 
-function incrementCount(type, domain) {
+function incrementCount(type, domain, client) {
   const day = new Date().toISOString().slice(0, 10);
   const d = domain || 'unknown';
   counts[day] = counts[day] || {};
   counts[day][d] = counts[day][d] || {};
-  counts[day][d][type] = (counts[day][d][type] || 0) + 1;
+  const existing = counts[day][d][type];
+  // Pre-migration data stored this bucket as a plain number; fold it in as human traffic.
+  const bucket = typeof existing === 'object' ? existing : (existing ? { human: existing } : {});
+  bucket[client] = (bucket[client] || 0) + 1;
+  counts[day][d][type] = bucket;
   saveCounts();
 }
 
