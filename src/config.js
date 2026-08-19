@@ -3,7 +3,7 @@ const config = {
   NODE_ENV: process.env.NODE_ENV,
   LOG_LEVEL: process.env.LOG_LEVEL,
   PRERENDER_URL: process.env.PRERENDER_URL || 'http://localhost:3000/render',
-  PAGE_LOAD_TIMEOUT: process.env.PAGE_LOAD_TIMEOUT || 10 * 1000,
+  PAGE_LOAD_TIMEOUT: process.env.PAGE_LOAD_TIMEOUT || 120 * 1000,
   STATS_URL: process.env.STATS_URL || 'http://stats:7200',
   STATS_PORT: Number(process.env.STATS_PORT) || 7200,
   STATS_DATA_DIR: process.env.STATS_DATA_DIR,

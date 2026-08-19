@@ -4,6 +4,7 @@ const url       = require('url');
 const puppeteer = require("puppeteer")
 const { forEach, findKey }  = require('lodash');
 const querySting = require('querystring');
+const config = require('./config');
 
 let browser;
 const cacheControl = 7*24*60*60; //7days
@@ -168,7 +169,7 @@ async function renderUrl (req, res){
 
     }
     catch(e){
-        logError(`Request error for ${clientUrl}`, inflightRequests[clientUrl], e)
+        logError(`Request error for ${clientUrl}`, inflightRequests[clientUrl], e, await captureDiagnostics())
         reportEvent('request_error', { url: clientUrl, domain: safeHostname(clientUrl), error: e ? e.toString() : 'unknown', ...requesterInfo(req) });
         return res.status(500).send('Internal server error');
     }
@@ -181,6 +182,8 @@ async function renderUrl (req, res){
     }
 }
 
+const MAX_INFLIGHT_WAIT_MS = 5 * 60 * 1000;
+
 async function renderInflightRequest(url){
 
     const urlRequest = inflightRequests[url]
@@ -190,7 +193,10 @@ async function renderInflightRequest(url){
             return urlRequest;
         }
 
-        if(urlRequest.numberOfChecks > 60*5){
+        // Wall-clock based: numberOfChecks is shared across every caller joined on this
+        // same URL, so when multiple callers poll concurrently it climbs faster than
+        // real time, making a poll-count threshold fire early and unpredictably.
+        if(Date.now() - urlRequest.requestDate.getTime() > MAX_INFLIGHT_WAIT_MS){
             throw new Error('Too much wait time for request to process ', urlRequest)
         }
 
@@ -431,7 +437,7 @@ async function renderHtml (urlRequest){
             let   importStyleSheets  = []
             
 
-            const timeout = process.env.PAGE_LOAD_TIMEOUT || 120*1000
+            const timeout = config.PAGE_LOAD_TIMEOUT
             let pdfOpts = {waitUntil : 'networkidle0', timeout} //timeout:0 (makes it infinite)
             
             //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
@@ -439,9 +445,25 @@ async function renderHtml (urlRequest){
             //     'x-is-prerender': 'true'
             // });
 
-            await page.setDefaultNavigationTimeout(timeout); 
+            await page.setDefaultNavigationTimeout(timeout);
 
-            await page.goto(clientUrl, pdfOpts);
+            // Logs what's still blocking networkidle0 once a render has been waiting a
+            // while, so a stuck/slow resource is visible before the render eventually
+            // times out rather than only after (reqStatus is already tracked above).
+            const navStartedOn = Date.now();
+            const stallLogger = setInterval(() => {
+                const elapsedMs = Date.now() - navStartedOn;
+                if(elapsedMs < 60*1000) return;
+                const pending = Object.keys(reqStatus);
+                logError(`Render for ${clientUrl} still waiting on network idle after ${(elapsedMs/1000).toFixed(0)}s, pending requests (${pending.length}):`, pending.slice(0, 20));
+            }, 15*1000);
+
+            try{
+                await page.goto(clientUrl, pdfOpts);
+            }
+            finally{
+                clearInterval(stallLogger);
+            }
             log('finished goto');
             // await sleep(5000);
 
@@ -508,9 +530,9 @@ async function renderHtml (urlRequest){
             reportEvent('render_success', { url: clientUrl, domain: htmlUrl.hostname, durationMs: (+new Date())-startTime, userAgent: urlRequest.userAgent });
 
     } catch (err) {
-        
+
         const errorMessage = err ? err.toString() : 'noerror';
-        logError(`error in processing request, ${errorMessage}`, err)
+        logError(`error in processing request, ${errorMessage}`, err, await captureDiagnostics())
         urlRequest.error = `Error when rendering page ${clientUrl}`;
         urlRequest.renderErrorOn = new Date();
 
@@ -673,6 +695,24 @@ function updateBaseUrl(content, baseUrl){
 
 function getInflightCount(){
     return Object.keys(inflightRequests).length;
+}
+
+async function captureDiagnostics(){
+    const mem = process.memoryUsage();
+    let openPages = null;
+    try{
+        if(browser) openPages = (await browser.pages()).length;
+    }
+    catch(e){
+        openPages = 'unavailable';
+    }
+    return {
+        rssMB: Math.round(mem.rss / (1024*1024)),
+        heapUsedMB: Math.round(mem.heapUsed / (1024*1024)),
+        externalMB: Math.round(mem.external / (1024*1024)),
+        inflightCount: getInflightCount(),
+        openPages
+    };
 }
 
 module.exports = {

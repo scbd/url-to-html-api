@@ -21,4 +21,17 @@ async function renderUrlPng(url) {
   });
 }
 
-module.exports = { renderUrlPng };
+async function renderUrlSectionPngs(url, selectors) {
+  return withBrowser(async (page) => {
+    await page.goto(url, { waitUntil: 'networkidle0' });
+    await page.waitForSelector('.tile-value');
+    const pngs = [];
+    for (const selector of selectors) {
+      const el = await page.$(selector);
+      pngs.push(await el.screenshot());
+    }
+    return pngs;
+  });
+}
+
+module.exports = { renderUrlPng, renderUrlSectionPngs };

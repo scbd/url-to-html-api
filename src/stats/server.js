@@ -52,7 +52,12 @@ app.get('/api/stats', (req, res) => {
   // Soft 404s are typically high-volume bot traffic; capping errors/restarts and
   // soft 404s to one shared "last 200" window lets soft 404s crowd real errors out
   // of the payload entirely, so each type gets its own window instead.
-  const allEvents = store.readEvents();
+  // asOf additionally scopes the window to one specific day — without it, a busier
+  // later day can just as easily crowd an earlier day's errors out of a global cap.
+  let allEvents = store.readEvents();
+  if (req.query.asOf) {
+    allEvents = allEvents.filter((e) => e.timestamp.slice(0, 10) === req.query.asOf);
+  }
   const recentErrors = allEvents.filter((e) => e.type !== 'soft_404').slice(-200).reverse();
   const recentSoftErrors = allEvents.filter((e) => e.type === 'soft_404').slice(-200).reverse();
 

@@ -79,18 +79,29 @@ async function uploadFileBytes(uploadUrl, buffer, filename) {
   if (!res.ok) throw new Error(`Upload to Slack failed: ${res.status}`);
 }
 
-async function postSnapshotToSlack({ png, day, caption }) {
+const SECTION_SELECTORS = ['#snap-section-1', '#snap-section-2', '#snap-section-3'];
+const SECTION_TITLES = ['Overview & by domain', 'By bot', 'Recent errors & soft 404s'];
+
+async function uploadOneFile(token, buffer, filename) {
+  const { upload_url: uploadUrl, file_id: fileId } = await slackApi(
+    'files.getUploadURLExternal', token, { filename, length: String(buffer.length) }
+  );
+  await uploadFileBytes(uploadUrl, buffer, filename);
+  return fileId;
+}
+
+async function postSnapshotToSlack({ pngs, day, caption }) {
   const token = process.env.SLACK_BOT_TOKEN;
   const channelId = process.env.SLACK_CHANNEL_ID;
   if (!token || !channelId) throw new Error('SLACK_BOT_TOKEN or SLACK_CHANNEL_ID not set');
 
-  const filename = `prerender-stats-${day}.png`;
-  const { upload_url: uploadUrl, file_id: fileId } = await slackApi(
-    'files.getUploadURLExternal', token, { filename, length: String(png.length) }
-  );
-  await uploadFileBytes(uploadUrl, png, filename);
+  const fileIds = [];
+  for (let i = 0; i < pngs.length; i++) {
+    fileIds.push(await uploadOneFile(token, pngs[i], `prerender-stats-${day}-${i + 1}.png`));
+  }
+
   await slackApi('files.completeUploadExternal', token, {
-    files: [{ id: fileId, title: `Prerender stats — ${day}` }],
+    files: fileIds.map((id, i) => ({ id, title: `Prerender stats — ${day} · ${SECTION_TITLES[i] || i + 1}` })),
     channel_id: channelId,
     initial_comment: caption,
   }, true);
@@ -100,8 +111,8 @@ async function sendDailyReport(port) {
   const day = yesterday();
   const summary = summarizeDay(day);
   const caption = formatMessage(summary).text;
-  const png = await screenshot.renderUrlPng(`http://localhost:${port}/?asOf=${day}`);
-  await postSnapshotToSlack({ png, day, caption });
+  const pngs = await screenshot.renderUrlSectionPngs(`http://localhost:${port}/?asOf=${day}`, SECTION_SELECTORS);
+  await postSnapshotToSlack({ pngs, day, caption });
 }
 
 module.exports = { sendDailyReport, summarizeDay, formatMessage };

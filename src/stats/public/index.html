@@ -135,6 +135,7 @@
 </head>
 <body>
   <div id="app">
+   <div id="snap-section-1">
     <h1>Prerender activity</h1>
     <div class="sub">up to {{ retentionDays }} days retained</div>
 
@@ -264,7 +265,9 @@
         </tr>
       </tbody>
     </table>
+   </div>
 
+   <div id="snap-section-2">
     <h2>By bot</h2>
     <table>
       <thead><tr><th>Bot</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
@@ -281,7 +284,9 @@
         </tr>
       </tbody>
     </table>
+   </div>
 
+   <div id="snap-section-3">
     <h2>Recent errors &amp; restarts</h2>
     <table>
       <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
@@ -327,6 +332,7 @@
         </tr>
       </tbody>
     </table>
+   </div>
 
     <div id="tooltip" role="tooltip" :class="{ show: tooltip.show }" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
       <div class="tt-label">{{ tooltip.label }}</div>
@@ -664,7 +670,8 @@ createApp({
     }
 
     async function loadStats() {
-      const res = await fetch('http://localhost:7200/api/stats');
+      const qs = ASOF_PARAM ? `?asOf=${encodeURIComponent(ASOF_PARAM)}` : '';
+      const res = await fetch(`http://localhost:7200/api/stats${qs}`);
       const data = await res.json();
       rawCounts.value = data.counts;
       rawErrors.value = data.recentErrors || [];
