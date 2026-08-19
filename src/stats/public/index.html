@@ -472,11 +472,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const ASOF_PARAM = new URLSearchParams(location.search).get('asOf');
 const NOW_MS = ASOF_PARAM ? new Date(`${ASOF_PARAM}T23:59:59.999Z`).getTime() : Date.now();
 
+// Mirrors MAX_CONCURRENT_RENDERS in src/renderer.js. Not exposed over /api/live today,
+// so it's duplicated here purely for the slot indicator — keep the two in sync by hand
+// until that becomes an API field.
+const MAX_CONCURRENT_RENDERS = 4;
+
 const STATUS = {
-  success:    { color: 'var(--status-good)', hex: '#0ca30c', label: 'Success' },
-  error:      { color: 'var(--status-critical)', hex: '#d03b3b', label: 'Error' },
-  restart:    { color: 'var(--status-warning)', hex: '#fab219', label: 'Restart' },
-  soft_error: { color: 'var(--series-blue)', hex: '#2a78d6', label: 'Soft error' },
+  success:    { color: 'var(--status-good)', fill: 'oklch(0.72 0.14 155)', label: 'Success' },
+  error:      { color: 'var(--status-critical)', fill: 'oklch(0.68 0.16 25)', label: 'Error' },
+  restart:    { color: 'var(--status-warning)', fill: 'oklch(0.8 0.13 80)', label: 'Restart' },
+  soft_error: { color: 'var(--series-blue)', fill: 'oklch(0.7 0.13 250)', label: 'Soft error' },
 };
 const STATUS_KEYS = ['success', 'error', 'restart', 'soft_error'];
 const RANGE_OPTIONS = [1, 3, 5, 7, 14, 30];
@@ -486,6 +491,40 @@ const KNOWN_TOOLS = [
   [/node-fetch/i, 'node-fetch'], [/axios/i, 'axios'], [/go-http-client/i, 'Go http client'],
   [/okhttp/i, 'okhttp'], [/wget/i, 'wget'],
 ];
+
+// Heuristic name match, not a vendored list like the crawler patterns — used only to
+// roll already-classified bot labels up into an "AI crawler" super-category for the
+// Traffic tab. A bot that doesn't match any of these just isn't counted in that KPI.
+const AI_CRAWLER_NAME_HINTS = [/gpt/i, /claude/i, /anthropic/i, /perplexity/i, /openai/i, /meta-external/i, /meta-webindexer/i, /bytespider/i, /ccbot/i];
+function isAiCrawlerLabel(label) { return AI_CRAWLER_NAME_HINTS.some((re) => re.test(label)); }
+
+// Dotfile/credential paths that should never reach a browser render. Matched against
+// recent error + soft-404 URLs only (that's the data we have) — not a general WAF.
+const PROBE_PATH_PATTERNS = [
+  /\.env(\.|$)/i, /\.aws\/credentials/i, /\.git\//i, /\.ssh\//i, /wp-admin/i, /wp-login/i,
+  /\.docker\//i, /rclone\.conf/i, /\.github\/workflows/i, /id_rsa/i, /\.htpasswd/i, /phpmyadmin/i,
+];
+function isProbePath(u) {
+  if (!u) return false;
+  let path;
+  try { path = new URL(u).pathname; } catch (e) { path = u; }
+  return PROBE_PATH_PATTERNS.some((re) => re.test(path));
+}
+
+// Best-effort soft-404 categorization by URL shape, derived from patterns actually seen
+// on this project's domains — not a general classifier.
+function classifySoft404(u) {
+  let path;
+  try { path = new URL(u).pathname + (new URL(u).search || ''); } catch (e) { path = u || ''; }
+  if (/documentID=/.test(path)) return 'legacy_query_form';
+  if (/\/(RA|NR|NR1|ORG|LMO|MSR|VLR)\//.test(path) && !/\/database\//.test(path)) return 'missing_database_segment';
+  return 'other';
+}
+const SOFT404_CAUSE_LABELS = {
+  missing_database_segment: 'Legacy record URL missing /database/ segment',
+  legacy_query_form: 'Legacy query-string record lookup (?documentID=)',
+  other: 'Other / unclassified',
+};
 
 function rangeLabel(n) { return n === 1 ? '1 day' : `${n} days`; }
 
@@ -500,6 +539,26 @@ function formatCompact(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return n.toLocaleString();
+}
+
+function formatMsAsSeconds(ms) {
+  return ms === null || ms === undefined ? '–' : (ms / 1000).toFixed(1) + 's';
+}
+
+// Bucketed histogram, not exact samples — this returns the upper edge of the first
+// bucket that reaches the target percentile, so it's accurate to the nearest bucket
+// boundary (see DURATION_BUCKETS_MS in store.js), not exact.
+function estimatePercentile(buckets, boundaries, p) {
+  if (!buckets || !boundaries || !boundaries.length) return null;
+  const total = buckets.reduce((a, b) => a + b, 0);
+  if (!total) return null;
+  const target = total * p;
+  let cumulative = 0;
+  for (let i = 0; i < buckets.length; i++) {
+    cumulative += buckets[i];
+    if (cumulative >= target) return boundaries[i];
+  }
+  return boundaries[boundaries.length - 1];
 }
 
 function isoDay(d) { return d.toISOString().slice(0, 10); }
@@ -548,13 +607,27 @@ function badgeIcon(status) {
   return '<circle cx="6" cy="6" r="5.5" fill="var(--status-critical)"/><path d="M4 4l4 4m0-4l-4 4" stroke="white" stroke-width="1.3" stroke-linecap="round"/>';
 }
 
+// Collapses per-request variance (urls, ids) so repeats of the same underlying failure
+// group into one signature instead of ~200 near-duplicates.
+function normalizeSignature(e) {
+  const msg = (e.error || e.reason || '').trim();
+  const collapsed = msg
+    .replace(/https?:\/\/\S+/g, '<url>')
+    .replace(/\b\d{4,}\b/g, '<n>')
+    .slice(0, 140);
+  return `${e.type}: ${collapsed || '(no detail)'}`;
+}
+
 createApp({
   setup() {
     const rawCounts = ref([]);
     const rawDurations = ref([]);
+    const durationBucketBoundaries = ref([]);
     const rawErrors = ref([]);
     const rawSoftErrors = ref([]);
     const rawLive = ref([]);
+    const rawDuplicates = ref([]);
+    const rawRoutePatterns = ref([]);
     const retentionDays = ref(30);
     const rangeDays = ref(1);
     const domainFilter = ref('');
@@ -842,8 +915,11 @@ createApp({
       const data = await res.json();
       rawCounts.value = data.counts;
       rawDurations.value = data.durations || [];
+      durationBucketBoundaries.value = data.durationBucketBoundaries || [];
       rawErrors.value = data.recentErrors || [];
       rawSoftErrors.value = data.recentSoftErrors || [];
+      rawDuplicates.value = data.duplicates || [];
+      rawRoutePatterns.value = data.routePatterns || [];
       retentionDays.value = data.retentionDays;
     }
 
