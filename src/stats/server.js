@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const store = require('./store');
 const { classifyUserAgent } = require('./botDetect');
+const { normalizeRoute } = require('./routePattern');
 const slackReport = require('./slackReport');
 
 const PORT = Number(process.env.STATS_PORT) || 7200;
@@ -27,6 +28,12 @@ app.post('/events', (req, res) => {
   if (typeof event.queueWaitMs === 'number') {
     store.recordDuration(event.domain, 'queueWaitMs', event.queueWaitMs);
   }
+  // Scoped to successful renders only — a failed render didn't actually produce cached
+  // output, so counting it as "duplicate work" or a "hot route" would overstate both.
+  if (event.type === 'render_success' && event.url) {
+    store.recordUrlSeen(event.domain, event.url);
+    store.incrementRoutePattern(event.domain, normalizeRoute(event.url));
+  }
   res.sendStatus(204);
 });
 
@@ -37,9 +44,9 @@ const LIVE_INSTANCE_STALE_MS = 60 * 1000;
 const liveInstances = {};
 
 app.post('/live-status', (req, res) => {
-  const { instance, activeRenders, rendering, queued } = req.body || {};
+  const { instance, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages } = req.body || {};
   if (!instance) return res.sendStatus(400);
-  liveInstances[instance] = { activeRenders, rendering, queued, updatedAt: Date.now() };
+  liveInstances[instance] = { activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, updatedAt: Date.now() };
   res.sendStatus(204);
 });
 
@@ -52,6 +59,13 @@ app.get('/api/live', (req, res) => {
       activeRenders: v.activeRenders,
       rendering: v.rendering || [],
       queued: v.queued || [],
+      // Undefined on instances running an older renderer build that doesn't report
+      // diagnostics yet — left out entirely rather than coerced to 0/null so the
+      // dashboard can tell "unknown" apart from "actually zero".
+      rssMB: v.rssMB,
+      heapUsedMB: v.heapUsedMB,
+      externalMB: v.externalMB,
+      openPages: v.openPages,
       ageMs: now - v.updatedAt,
     }));
   res.json({ instances });
@@ -97,8 +111,33 @@ app.get('/api/stats', (req, res) => {
   const durationRows = [];
   Object.entries(store.readDurations()).forEach(([date, domains]) => {
     Object.entries(domains).forEach(([domain, metrics]) => {
-      Object.entries(metrics).forEach(([metric, { sum, count }]) => {
-        durationRows.push({ date, domain, metric, sum, count });
+      Object.entries(metrics).forEach(([metric, { sum, count, buckets }]) => {
+        durationRows.push({ date, domain, metric, sum, count, buckets: buckets || null });
+      });
+    });
+  });
+
+  // Aggregated server-side rather than shipping the raw per-URL/per-domain maps to the
+  // client — those can hold thousands of distinct URLs per day, far more than the
+  // handful of numbers the dashboard actually needs from them.
+  const duplicateRows = [];
+  Object.entries(store.readUrlSeen()).forEach(([date, domains]) => {
+    Object.entries(domains).forEach(([domain, urls]) => {
+      let totalRenders = 0;
+      let duplicateRenders = 0;
+      Object.values(urls).forEach((n) => {
+        totalRenders += n;
+        if (n > 1) duplicateRenders += n - 1;
+      });
+      duplicateRows.push({ date, domain, totalRenders, duplicateRenders });
+    });
+  });
+
+  const routePatternRows = [];
+  Object.entries(store.readRoutePatterns()).forEach(([date, domains]) => {
+    Object.entries(domains).forEach(([domain, patterns]) => {
+      Object.entries(patterns).forEach(([pattern, n]) => {
+        routePatternRows.push({ date, domain, pattern, n });
       });
     });
   });
@@ -107,6 +146,9 @@ app.get('/api/stats', (req, res) => {
     retentionDays: store.RETENTION_DAYS,
     counts: rows,
     durations: durationRows,
+    durationBucketBoundaries: store.DURATION_BUCKETS_MS,
+    duplicates: duplicateRows,
+    routePatterns: routePatternRows,
     recentErrors,
     recentSoftErrors,
   });
@@ -122,6 +164,8 @@ setInterval(() => {
   const remaining = store.pruneOldEvents();
   store.pruneOldCounts();
   store.pruneOldDurations();
+  store.pruneOldUrlSeen();
+  store.pruneOldRoutePatterns();
   console.log(`Pruned stats events, ${remaining} remaining`);
 }, PRUNE_INTERVAL_MS);
 
