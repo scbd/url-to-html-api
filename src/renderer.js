@@ -763,7 +763,7 @@ async function captureDiagnostics(){
     };
 }
 
-function logInflightSnapshot(){
+async function logInflightSnapshot(){
     const entries = Object.values(inflightRequests);
     const now = Date.now();
     const detail = entries.map(r => ({
@@ -775,19 +775,19 @@ function logInflightSnapshot(){
     const rendering = detail.filter(e => e.status === 'inflight');
     const queued = detail.filter(e => e.status === 'request');
 
-    if(entries.length > 0){
-        logError(
-            `[${INSTANCE_ID}] Live render snapshot — activeRenders: ${activeRenders}, rendering: ${rendering.length}, queued: ${queued.length}`,
-            { rendering, queued }
-        );
-    }
+    // Was already computed on error paths (see catch blocks above) but only ever
+    // logged locally; reused here so the dashboard's per-instance memory/openPages
+    // reflects steady-state health too, not just the moment something broke.
+    const { rssMB, heapUsedMB, externalMB, openPages } = await captureDiagnostics();
 
     // Reported unconditionally (even when empty) so the dashboard clears an instance's
     // display when it goes idle instead of showing its last-known busy state forever.
-    reportLiveStatus({ instance: INSTANCE_ID, activeRenders, rendering, queued });
+    reportLiveStatus({ instance: INSTANCE_ID, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages });
 }
 
-setInterval(logInflightSnapshot, 15*1000);
+setInterval(() => {
+    logInflightSnapshot().catch(e => logError('Error in logInflightSnapshot', e));
+}, 15*1000);
 
 module.exports = {
     renderUrl,
