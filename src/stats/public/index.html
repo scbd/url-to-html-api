@@ -211,249 +211,456 @@
 </head>
 <body>
   <div id="app">
-    <h2>Live render activity</h2>
-    <div v-if="!liveInstances.length" class="card" style="padding:16px 20px; margin-bottom:24px;">
-      <div class="empty">No render instances reporting right now.</div>
-    </div>
-    <div v-else style="margin-bottom:24px;">
-      <div class="kpis" style="margin-bottom:12px;">
-        <div class="card tile">
-          <div class="tile-label">Total rendering</div>
-          <div class="tile-value">{{ totalRendering }}</div>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand-row">
+          <h1>Prerender console</h1>
+          <span class="live-pill" :class="{ live: liveInstances.length > 0 }">
+            <span class="live-dot"></span>{{ liveInstances.length }} instance{{ liveInstances.length === 1 ? '' : 's' }} live
+          </span>
+          <div class="filters" role="group" aria-label="Date range">
+            <button v-for="r in RANGE_OPTIONS" :key="r" :aria-pressed="rangeDays === r" @click="rangeDays = r">{{ rangeLabel(r) }}</button>
+            <label class="refresh-label" for="refreshInterval">Refresh</label>
+            <select id="refreshInterval" v-model.number="refreshMs">
+              <option :value="0">Off</option>
+              <option :value="3000">3s</option>
+              <option :value="5000">5s</option>
+              <option :value="10000">10s</option>
+              <option :value="30000">30s</option>
+              <option :value="60000">1m</option>
+              <option :value="300000">5m</option>
+            </select>
+          </div>
         </div>
-        <div class="card tile">
-          <div class="tile-label">Total queued</div>
-          <div class="tile-value">{{ totalQueued }}</div>
-        </div>
-        <div class="card tile" v-for="inst in liveInstances" :key="inst.instance">
-          <div class="tile-label" :title="inst.instance">{{ inst.instance }}</div>
-          <div class="tile-value">{{ inst.activeRenders }}</div>
-          <div class="tile-foot">{{ inst.queuedCount }} queued</div>
-        </div>
-      </div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr><th>Instance</th><th>Status</th><th>URL</th><th class="num">Elapsed</th><th>Client</th></tr></thead>
-          <tbody>
-            <tr v-if="!liveEntries.length"><td colspan="5" class="empty">Nothing in flight right now.</td></tr>
-            <tr v-for="(e, i) in liveEntries" :key="i">
-              <td>{{ e.instance }}</td>
-              <td>{{ e.status === 'inflight' ? 'Rendering' : 'Queued' }}</td>
-              <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
-              <td class="num">{{ (e.elapsedMs / 1000).toFixed(1) }}s</td>
-              <td>{{ friendlyAgent(e.userAgent) || e.userAgent || '' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+        <div class="sub">up to {{ retentionDays }} days retained</div>
 
-   <div id="snap-section-1">
-    <h1>Prerender activity</h1>
-    <div class="sub">up to {{ retentionDays }} days retained</div>
-
-    <div class="filters" role="group" aria-label="Date range">
-      <button v-for="r in RANGE_OPTIONS" :key="r" :aria-pressed="rangeDays === r" @click="rangeDays = r">{{ rangeLabel(r) }}</button>
-      <label class="refresh-label" for="refreshInterval">Refresh</label>
-      <select id="refreshInterval" v-model.number="refreshMs">
-        <option :value="0">Off</option>
-        <option :value="3000">3s</option>
-        <option :value="5000">5s</option>
-        <option :value="10000">10s</option>
-        <option :value="30000">30s</option>
-        <option :value="60000">1m</option>
-        <option :value="300000">5m</option>
-      </select>
-    </div>
-
-    <div class="filters secondary" role="group" aria-label="Breakdown filters">
-      <div class="filter-group">
-        <label class="filter-label" for="domainFilter">Domain</label>
-        <select id="domainFilter" v-model="domainFilter">
-          <option value="">All domains</option>
-          <option v-for="d in domains" :key="d" :value="d">{{ d }}</option>
-        </select>
-      </div>
-      <span class="filter-divider"></span>
-      <div class="filter-group">
-        <span class="filter-label">Status</span>
-        <div class="segmented" role="group" aria-label="Status">
-          <button v-for="s in STATUS_KEYS" :key="s" :aria-pressed="statusFilter.has(s)" @click="toggleStatus(s)">{{ STATUS[s].label }}</button>
+        <div class="filters secondary" role="group" aria-label="Breakdown filters">
+          <div class="filter-group">
+            <label class="filter-label" for="domainFilter">Domain</label>
+            <select id="domainFilter" v-model="domainFilter">
+              <option value="">All domains</option>
+              <option v-for="d in domains" :key="d" :value="d">{{ d }}</option>
+            </select>
+          </div>
+          <span class="filter-divider"></span>
+          <div class="filter-group">
+            <span class="filter-label">Status</span>
+            <div class="segmented" role="group" aria-label="Status">
+              <button v-for="s in STATUS_KEYS" :key="s" :aria-pressed="statusFilter.has(s)" @click="toggleStatus(s)">{{ STATUS[s].label }}</button>
+            </div>
+            <button class="toggle-view" type="button" @click="resetStatus">Reset</button>
+          </div>
+          <span class="filter-divider"></span>
+          <div class="filter-group">
+            <span class="filter-label">Traffic</span>
+            <div class="segmented" role="group" aria-label="Bot traffic">
+              <button :aria-pressed="botFilter === 'all'" @click="botFilter = 'all'">All</button>
+              <button :aria-pressed="botFilter === 'bot'" @click="botFilter = 'bot'">Bots</button>
+              <button :aria-pressed="botFilter === 'human'" @click="botFilter = 'human'">Humans</button>
+            </div>
+          </div>
         </div>
-        <button class="toggle-view" type="button" @click="resetStatus">Reset</button>
-      </div>
-      <span class="filter-divider"></span>
-      <div class="filter-group">
-        <span class="filter-label">Traffic</span>
-        <div class="segmented" role="group" aria-label="Bot traffic">
-          <button :aria-pressed="botFilter === 'all'" @click="botFilter = 'all'">All</button>
-          <button :aria-pressed="botFilter === 'bot'" @click="botFilter = 'bot'">Bots</button>
-          <button :aria-pressed="botFilter === 'human'" @click="botFilter = 'human'">Humans</button>
+
+        <div class="tabs" role="tablist">
+          <button role="tab" data-tab-btn="overview" :aria-pressed="activeTab === 'overview'" @click="activeTab = 'overview'">Overview</button>
+          <button role="tab" data-tab-btn="live" :aria-pressed="activeTab === 'live'" @click="activeTab = 'live'">
+            Live activity
+            <span v-if="totalQueued" class="tab-badge">{{ totalQueued }} queued</span>
+          </button>
+          <button role="tab" data-tab-btn="traffic" :aria-pressed="activeTab === 'traffic'" @click="activeTab = 'traffic'">Traffic</button>
+          <button role="tab" data-tab-btn="errors" :aria-pressed="activeTab === 'errors'" @click="activeTab = 'errors'">
+            Errors
+            <span v-if="failuresInRange" class="tab-badge">{{ formatCompact(failuresInRange) }}</span>
+          </button>
         </div>
       </div>
-    </div>
+    </header>
 
-    <h2>Overview</h2>
-    <div class="kpis">
-      <div class="card tile" v-for="k in kpis" :key="k.label">
-        <div class="tile-label">{{ k.label }}</div>
-        <div class="tile-value" :class="k.cls">{{ k.value }}</div>
-        <div class="tile-foot" v-if="k.spark"><div v-html="k.spark"></div></div>
-      </div>
-    </div>
+    <main class="page">
 
-    <h2>Renders per day</h2>
-    <div class="card chart-card">
-      <div class="chart-head">
-        <div class="legend">
-          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-good)"/><path d="M5 8.3l2 2 4-4.4" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Success</span>
-          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-critical)"/><path d="M5.5 5.5l5 5m0-5l-5 5" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>Error</span>
-          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="var(--status-warning)"/><rect x="7.3" y="6" width="1.4" height="4.2" fill="var(--text-primary)"/><rect x="7.3" y="11" width="1.4" height="1.4" fill="var(--text-primary)"/></svg>Restart</span>
-          <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--series-blue)"/><path d="M4.5 8.5c1-1.6 2.1-1.6 3.1 0s2.1 1.6 3.1 0" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>Soft error</span>
+    <!-- ═══ Overview ═══ -->
+    <div v-show="activeTab === 'overview'" id="snap-section-1" data-tab-panel="overview">
+      <h2>Overview</h2>
+      <div class="kpis">
+        <div class="card tile" v-for="k in kpis" :key="k.label">
+          <div class="tile-label">{{ k.label }}</div>
+          <div class="tile-value" :class="k.cls">{{ k.value }}</div>
+          <div class="tile-foot" v-if="k.spark"><div v-html="k.spark"></div></div>
         </div>
-        <button class="toggle-view" @click="showDailyTable = !showDailyTable">{{ showDailyTable ? 'View as chart' : 'View as table' }}</button>
       </div>
-      <div class="chart-scroll" v-show="!showDailyTable">
-        <div v-if="dailyChart.empty" class="empty">No renders in this range yet.</div>
-        <svg v-else :width="dailyChart.width" :height="dailyChart.height" role="img" aria-label="Renders per day, stacked by outcome">
-          <line x1="0" :y1="dailyChart.plotH" :x2="dailyChart.width" :y2="dailyChart.plotH" stroke="var(--baseline)" stroke-width="1"/>
-          <rect v-for="(r, i) in dailyChart.fillRects" :key="'f' + i" class="bar-seg" :x="r.x" :y="r.y" :width="r.width" :height="r.height" :rx="r.rx" :ry="r.rx" :fill="r.fill"/>
-          <rect
-            v-for="(r, i) in dailyChart.hitRects" :key="'h' + i" class="hit" tabindex="0"
-            :x="r.x" :y="r.y" :width="r.width" :height="r.height"
-            @pointerenter="showTip($event, r.date + ' · ' + STATUS[r.status].label, r.value.toLocaleString())"
-            @focus="showTip($event, r.date + ' · ' + STATUS[r.status].label, r.value.toLocaleString())"
-            @pointerleave="hideTip" @blur="hideTip"
-          />
-          <text v-for="(l, i) in dailyChart.labels" :key="'l' + i" :x="l.x" :y="dailyChart.height" text-anchor="middle">{{ l.text }}</text>
-        </svg>
-      </div>
-      <div v-show="showDailyTable" class="table-scroll surface">
-        <table>
-          <thead><tr><th>Date</th><th class="num">Success</th><th class="num">Error</th><th class="num">Restart</th><th class="num">Soft error</th><th class="num">Total</th></tr></thead>
-          <tbody>
-            <tr v-for="d in dailyTableRows" :key="d.date">
-              <td>{{ d.date }}</td>
-              <td class="num">{{ d.success.toLocaleString() }}</td>
-              <td class="num">{{ d.error.toLocaleString() }}</td>
-              <td class="num">{{ d.restart.toLocaleString() }}</td>
-              <td class="num">{{ d.soft_error.toLocaleString() }}</td>
-              <td class="num">{{ d.total.toLocaleString() }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
 
-    <h2>By domain</h2>
-    <div class="card chart-card">
-      <div v-if="!domainBarVM.length" class="empty">No renders in this range yet.</div>
-      <div v-else>
-        <div class="domain-bar-row" v-for="row in domainBarVM" :key="row.domain">
-          <div class="domain-name" :title="row.domain">{{ row.domain }}</div>
-          <div class="domain-track">
-            <div
-              v-for="seg in row.segments" :key="seg.status" class="domain-seg hit" tabindex="0"
-              :style="{ width: seg.pct + '%', background: seg.color }"
-              @pointerenter="showTip($event, row.domain + ' · ' + STATUS[seg.status].label, seg.value.toLocaleString())"
-              @focus="showTip($event, row.domain + ' · ' + STATUS[seg.status].label, seg.value.toLocaleString())"
+      <h2>Renders per day</h2>
+      <div class="card chart-card">
+        <div class="chart-head">
+          <div class="legend">
+            <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-good)"/><path d="M5 8.3l2 2 4-4.4" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Success</span>
+            <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--status-critical)"/><path d="M5.5 5.5l5 5m0-5l-5 5" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>Error</span>
+            <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="var(--status-warning)"/><rect x="7.3" y="6" width="1.4" height="4.2" fill="var(--text-primary)"/><rect x="7.3" y="11" width="1.4" height="1.4" fill="var(--text-primary)"/></svg>Restart</span>
+            <span class="legend-item"><svg class="legend-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--series-blue)"/><path d="M4.5 8.5c1-1.6 2.1-1.6 3.1 0s2.1 1.6 3.1 0" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>Soft error</span>
+          </div>
+          <button class="toggle-view" @click="showDailyTable = !showDailyTable">{{ showDailyTable ? 'View as chart' : 'View as table' }}</button>
+        </div>
+        <div class="chart-scroll" v-show="!showDailyTable">
+          <div v-if="dailyChart.empty" class="empty">No renders in this range yet.</div>
+          <svg v-else :width="dailyChart.width" :height="dailyChart.height" role="img" aria-label="Renders per day, stacked by outcome">
+            <line x1="0" :y1="dailyChart.plotH" :x2="dailyChart.width" :y2="dailyChart.plotH" stroke="var(--baseline)" stroke-width="1"/>
+            <rect v-for="(r, i) in dailyChart.fillRects" :key="'f' + i" class="bar-seg" :x="r.x" :y="r.y" :width="r.width" :height="r.height" :rx="r.rx" :ry="r.rx" :fill="r.fill"/>
+            <rect
+              v-for="(r, i) in dailyChart.hitRects" :key="'h' + i" class="hit" tabindex="0"
+              :x="r.x" :y="r.y" :width="r.width" :height="r.height"
+              @pointerenter="showTip($event, r.date + ' · ' + STATUS[r.status].label, r.value.toLocaleString())"
+              @focus="showTip($event, r.date + ' · ' + STATUS[r.status].label, r.value.toLocaleString())"
               @pointerleave="hideTip" @blur="hideTip"
-            ></div>
+            />
+            <text v-for="(l, i) in dailyChart.labels" :key="'l' + i" :x="l.x" :y="dailyChart.height" text-anchor="middle">{{ l.text }}</text>
+          </svg>
+        </div>
+        <div v-show="showDailyTable" class="table-scroll surface">
+          <table>
+            <thead><tr><th>Date</th><th class="num">Success</th><th class="num">Error</th><th class="num">Restart</th><th class="num">Soft error</th><th class="num">Total</th></tr></thead>
+            <tbody>
+              <tr v-for="d in dailyTableRows" :key="d.date">
+                <td>{{ d.date }}</td>
+                <td class="num">{{ d.success.toLocaleString() }}</td>
+                <td class="num">{{ d.error.toLocaleString() }}</td>
+                <td class="num">{{ d.restart.toLocaleString() }}</td>
+                <td class="num">{{ d.soft_error.toLocaleString() }}</td>
+                <td class="num">{{ d.total.toLocaleString() }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <h2>Diagnosis</h2>
+      <div v-if="!insights.length" class="gap-note">Not enough signal in this range/filter combination to raise anything worth flagging.</div>
+      <div v-else class="insight-grid">
+        <div class="insight-card" v-for="ins in insights" :key="ins.tag + ins.title">
+          <span class="insight-tag">{{ ins.tag }}</span>
+          <span class="insight-title">{{ ins.title }}</span>
+          <span class="insight-body">{{ ins.body }}</span>
+        </div>
+      </div>
+
+      <h2>By domain</h2>
+      <div class="card chart-card">
+        <div v-if="!domainBarVM.length" class="empty">No renders in this range yet.</div>
+        <div v-else>
+          <div class="domain-bar-row" v-for="row in domainBarVM" :key="row.domain">
+            <div class="domain-name" :title="row.domain">{{ row.domain }}</div>
+            <div class="domain-track">
+              <div
+                v-for="seg in row.segments" :key="seg.status" class="domain-seg hit" tabindex="0"
+                :style="{ width: seg.pct + '%', background: seg.color }"
+                @pointerenter="showTip($event, row.domain + ' · ' + STATUS[seg.status].label, seg.value.toLocaleString())"
+                @focus="showTip($event, row.domain + ' · ' + STATUS[seg.status].label, seg.value.toLocaleString())"
+                @pointerleave="hideTip" @blur="hideTip"
+              ></div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-    <div class="table-scroll" style="margin-top:12px">
-      <table>
-        <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
-        <tbody>
-          <tr v-if="!domainRows.length"><td colspan="7" class="empty">No data yet.</td></tr>
-          <tr v-for="r in domainRows" :key="r.domain">
-            <td>{{ r.domain }}</td>
-            <td class="num">{{ r.total.toLocaleString() }}</td>
-            <td class="num">{{ r.success.toLocaleString() }}</td>
-            <td class="num">{{ r.error.toLocaleString() }}</td>
-            <td class="num">{{ r.restart.toLocaleString() }}</td>
-            <td class="num">{{ r.soft_error.toLocaleString() }}</td>
-            <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-   </div>
-
-   <div id="snap-section-2">
-    <h2>By bot</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>Bot</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
-        <tbody>
-          <tr v-if="!botRows.length"><td colspan="7" class="empty">No bot traffic in this range.</td></tr>
-          <tr v-for="r in botRows" :key="r.bot">
-            <td>{{ r.bot }}</td>
-            <td class="num">{{ r.total.toLocaleString() }}</td>
-            <td class="num">{{ r.success.toLocaleString() }}</td>
-            <td class="num">{{ r.error.toLocaleString() }}</td>
-            <td class="num">{{ r.restart.toLocaleString() }}</td>
-            <td class="num">{{ r.soft_error.toLocaleString() }}</td>
-            <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-   </div>
-
-   <div id="snap-section-3">
-    <h2>Recent errors &amp; restarts</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
-        <tbody>
-          <tr v-if="!filteredErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
-          <tr v-for="(e, i) in filteredErrors" :key="i">
-            <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
-            <td>
-              <span class="badge">
-                <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
-                <span>{{ e.type }}</span>
-              </span>
-            </td>
-            <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
-            <td>
-              <div>{{ e.ip || '' }}</div>
-              <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
-            </td>
-            <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll" style="margin-top:12px">
+        <table>
+          <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
+          <tbody>
+            <tr v-if="!domainRows.length"><td colspan="7" class="empty">No data yet.</td></tr>
+            <tr v-for="r in domainRows" :key="r.domain">
+              <td>{{ r.domain }}</td>
+              <td class="num">{{ r.total.toLocaleString() }}</td>
+              <td class="num">{{ r.success.toLocaleString() }}</td>
+              <td class="num">{{ r.error.toLocaleString() }}</td>
+              <td class="num">{{ r.restart.toLocaleString() }}</td>
+              <td class="num">{{ r.soft_error.toLocaleString() }}</td>
+              <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <h2>Recent soft 404s</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
-        <tbody>
-          <tr v-if="!filteredSoftErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
-          <tr v-for="(e, i) in filteredSoftErrors" :key="i">
-            <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
-            <td>
-              <span class="badge">
-                <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
-                <span>{{ e.type }}</span>
-              </span>
-            </td>
-            <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
-            <td>
-              <div>{{ e.ip || '' }}</div>
-              <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
-            </td>
-            <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <!-- ═══ Live activity ═══ -->
+    <div v-show="activeTab === 'live'" data-tab-panel="live">
+      <div v-if="!liveInstances.length" class="card" style="padding:16px 20px;">
+        <div class="empty">No render instances reporting right now.</div>
+      </div>
+      <div v-else>
+        <div class="kpis" style="margin-bottom:20px;">
+          <div class="card tile">
+            <div class="tile-label">Total rendering</div>
+            <div class="tile-value">{{ totalRendering }}</div>
+          </div>
+          <div class="card tile">
+            <div class="tile-label">Total queued</div>
+            <div class="tile-value" :class="totalQueued > 0 ? 'warning' : ''">{{ totalQueued }}</div>
+          </div>
+          <div class="card tile">
+            <div class="tile-label">Oldest queued wait</div>
+            <div class="tile-value" :class="oldestQueuedMs > 60000 ? 'critical' : oldestQueuedMs > 15000 ? 'warning' : ''">{{ (oldestQueuedMs / 1000).toFixed(0) }}s</div>
+          </div>
+          <div class="card tile">
+            <div class="tile-label">Duplicate URLs queued right now</div>
+            <div class="tile-value" :class="duplicateQueuedCount > 0 ? 'warning' : ''">{{ duplicateQueuedCount }}</div>
+            <div class="tile-sub">Same URL requested more than once while still in flight — a dedupe would free a slot.</div>
+          </div>
+          <div class="card tile" :class="{ pending: estimatedDrainSeconds === null }">
+            <div class="tile-label">Estimated drain time</div>
+            <div class="tile-value">{{ estimatedDrainSeconds === null ? '–' : formatMsAsSeconds(estimatedDrainSeconds * 1000) }}</div>
+            <div class="tile-sub">{{ estimatedDrainSeconds === null ? 'not enough renders today to estimate throughput' : 'queued ÷ today\'s average completion rate — a rough estimate, not a live rate' }}</div>
+          </div>
+        </div>
+
+        <h2>Instances</h2>
+        <div class="kpis" style="margin-bottom:20px;">
+          <div class="card instance-card" v-for="inst in instanceCards" :key="inst.instance">
+            <div class="instance-head">
+              <span class="instance-id" :title="inst.instance">{{ inst.instance }}</span>
+              <span class="instance-state" :class="inst.saturated ? 'saturated' : 'healthy'">{{ inst.saturated ? 'saturated' : 'healthy' }}</span>
+            </div>
+            <div class="slot-row">
+              <div class="slot" v-for="n in MAX_CONCURRENT_RENDERS" :key="n" :class="{ filled: n <= inst.activeRenders }"></div>
+            </div>
+            <div class="instance-stats">
+              <div>
+                <div class="instance-stat-label">slots</div>
+                <div>{{ inst.activeRenders }}/{{ MAX_CONCURRENT_RENDERS }}</div>
+              </div>
+              <div>
+                <div class="instance-stat-label">queued</div>
+                <div>{{ inst.queuedCount }}</div>
+              </div>
+              <div>
+                <div class="instance-stat-label">memory (rss)</div>
+                <div>{{ inst.rssMB === undefined ? '–' : inst.rssMB + ' MB' }}</div>
+              </div>
+              <div>
+                <div class="instance-stat-label">open pages</div>
+                <div>{{ inst.openPages === undefined ? '–' : inst.openPages }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <h2>Render queue</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Instance</th><th>Status</th><th>URL</th><th class="num">Elapsed</th><th>Client</th></tr></thead>
+            <tbody>
+              <tr v-if="!liveEntries.length"><td colspan="5" class="empty">Nothing in flight right now.</td></tr>
+              <tr v-for="(e, i) in liveEntries" :key="i">
+                <td>{{ e.instance }}</td>
+                <td>{{ e.status === 'inflight' ? 'Rendering' : 'Queued' }}</td>
+                <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+                <td class="num">{{ (e.elapsedMs / 1000).toFixed(1) }}s</td>
+                <td>{{ friendlyAgent(e.userAgent) || e.userAgent || '' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
-   </div>
+
+    <!-- ═══ Traffic ═══ -->
+    <div v-show="activeTab === 'traffic'" data-tab-panel="traffic">
+      <h2>Traffic</h2>
+      <div class="kpis" style="margin-bottom:20px;">
+        <div class="card tile" v-for="k in trafficKpis" :key="k.label" :class="{ pending: k.pending }">
+          <div class="tile-label">{{ k.label }}</div>
+          <div class="tile-value">{{ k.value }}</div>
+          <div class="tile-sub">{{ k.sub }}</div>
+        </div>
+      </div>
+
+      <div id="snap-section-2">
+        <h2>Crawlers by volume</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Bot</th><th>Share of renders</th><th class="num">Total</th><th class="num">Errors</th><th class="num">Soft</th><th class="num">Fail rate</th><th class="num">Signal</th></tr></thead>
+            <tbody>
+              <tr v-if="!botRows.length"><td colspan="7" class="empty">No bot traffic in this range.</td></tr>
+              <tr v-for="r in botRows" :key="r.bot">
+                <td>{{ r.bot }}</td>
+                <td>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <div class="share-track"><div class="share-fill" :style="{ width: r.shareWidthPct + '%' }"></div></div>
+                    <span style="font-size:11px; color:var(--text-muted); width:38px; text-align:right;">{{ r.sharePct }}%</span>
+                  </div>
+                </td>
+                <td class="num">{{ r.total.toLocaleString() }}</td>
+                <td class="num">{{ r.error.toLocaleString() }}</td>
+                <td class="num">{{ r.soft_error.toLocaleString() }}</td>
+                <td class="num" :class="r.rate >= 40 ? 'critical' : r.rate >= 20 ? 'warning' : ''">{{ r.rate.toFixed(1) }}%</td>
+                <td class="num"><span class="flag-tag">{{ r.flag }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:20px;">
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">Render budget: where the time goes</h2>
+          <div v-if="!renderBudget" class="empty">No duration data in this range yet.</div>
+          <template v-else>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div>
+                <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:5px;">
+                  <span>Avg queue wait</span><span>{{ formatMsAsSeconds(renderBudget.queueWaitMs) }}</span>
+                </div>
+                <div class="share-track" style="height:8px;"><div class="share-fill" :style="{ width: renderBudget.queuePct + '%', background: 'var(--status-critical)' }"></div></div>
+              </div>
+              <div>
+                <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:5px;">
+                  <span>Avg render time</span><span>{{ formatMsAsSeconds(renderBudget.renderDurationMs) }}</span>
+                </div>
+                <div class="share-track" style="height:8px;"><div class="share-fill" :style="{ width: (100 - renderBudget.queuePct) + '%', background: 'var(--status-good)' }"></div></div>
+              </div>
+              <div v-if="renderBudget.queueWaitP95Ms !== null || renderBudget.renderDurationP95Ms !== null" style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:4px; font-size:12.5px;">
+                <div><span style="color:var(--text-muted);">p95 queue wait</span><br>{{ formatMsAsSeconds(renderBudget.queueWaitP95Ms) }}</div>
+                <div><span style="color:var(--text-muted);">p95 render time</span><br>{{ formatMsAsSeconds(renderBudget.renderDurationP95Ms) }}</div>
+              </div>
+            </div>
+            <div class="gap-note" style="margin-top:12px;" v-if="renderBudget.queueWaitP95Ms === null && renderBudget.renderDurationP95Ms === null">
+              p95 needs the latency histogram — no bucketed samples exist yet for this range/domain, only pre-rollout sum/count rows. It'll fill in once new data lands.
+            </div>
+            <div class="gap-note" style="margin-top:12px;" v-else>
+              p95 is bucketed, not exact — accurate to the nearest histogram edge (see <code>DURATION_BUCKETS_MS</code> in <code>store.js</code>), not a precise percentile.
+            </div>
+          </template>
+        </div>
+
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">Hottest route patterns</h2>
+          <div v-if="!routePatternRows.length" class="empty">No route-pattern data in this range yet (only accumulates from successful renders since rollout).</div>
+          <div v-else style="display:flex; flex-direction:column; gap:10px;">
+            <div v-for="r in routePatternRows" :key="r.pattern">
+              <div style="display:flex; justify-content:space-between; gap:12px; font-size:12px;">
+                <span class="url" style="color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ r.pattern }}</span>
+                <span style="color:var(--text-muted); flex:none;">{{ r.n.toLocaleString() }}</span>
+              </div>
+              <div class="share-track" style="height:6px; margin-top:4px;"><div class="share-fill" :style="{ width: r.widthPct + '%' }"></div></div>
+            </div>
+          </div>
+          <div class="gap-note" style="margin-top:12px;">Normalized by a generic heuristic (record-ID-like segments collapsed to <code>&lt;id&gt;</code>) — a rough grouping, not an exact router.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Errors ═══ -->
+    <div v-show="activeTab === 'errors'" data-tab-panel="errors">
+      <h2>Errors</h2>
+      <div class="kpis" style="margin-bottom:20px;">
+        <div class="card tile">
+          <div class="tile-label">Failures in range</div>
+          <div class="tile-value critical">{{ formatCompact(failuresInRange) }}</div>
+          <div class="tile-sub">hard errors + soft 404s</div>
+        </div>
+        <div class="card tile">
+          <div class="tile-label">Distinct signatures</div>
+          <div class="tile-value">{{ distinctSignatureCount }}</div>
+          <div class="tile-sub">in the current sample (last ~200 events)</div>
+        </div>
+        <div class="card tile">
+          <div class="tile-label">Browser restarts</div>
+          <div class="tile-value" :class="aggregates.byStatus.restart > 0 ? 'warning' : ''">{{ aggregates.byStatus.restart }}</div>
+          <div class="tile-sub">{{ mtbfLabel }}</div>
+        </div>
+        <div class="card tile" :class="{ pending: !probeHits.length }">
+          <div class="tile-label">Probe requests detected</div>
+          <div class="tile-value" :class="probeHits.length ? 'critical' : ''">{{ probeHits.length }}</div>
+          <div class="tile-sub">credential/dotfile paths, current sample</div>
+        </div>
+      </div>
+
+      <div id="snap-section-3">
+        <h2>Grouped failures</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Signature</th><th>Sample URL</th><th class="num">Count</th><th>Top client</th><th>Last seen</th></tr></thead>
+            <tbody>
+              <tr v-if="!errorGroups.length"><td colspan="5" class="empty">No failures in this range.</td></tr>
+              <tr v-for="g in errorGroups" :key="g.key">
+                <td>
+                  <span class="badge"><svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(g.type))"></svg><span>{{ g.type }}</span></span>
+                  <div class="client-ua" :title="g.key">{{ g.key.slice(g.type.length + 2) }}</div>
+                </td>
+                <td class="url" :title="g.sample">{{ g.sample }}</td>
+                <td class="num">{{ g.count.toLocaleString() }}</td>
+                <td>{{ g.topClient }}</td>
+                <td>{{ g.last.replace('T', ' ').slice(0, 19) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>Recent soft 404s</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
+            <tbody>
+              <tr v-if="!filteredSoftErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
+              <tr v-for="(e, i) in filteredSoftErrors" :key="i">
+                <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+                <td>
+                  <span class="badge">
+                    <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
+                    <span>{{ e.type }}</span>
+                  </span>
+                </td>
+                <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+                <td>
+                  <div>{{ e.ip || '' }}</div>
+                  <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
+                </td>
+                <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:20px;">
+        <div class="security-card" :class="{ clear: !probeHits.length }">
+          <div class="insight-tag" :style="{ color: probeHits.length ? 'var(--status-critical)' : 'var(--text-muted)' }">security</div>
+          <div class="insight-title">
+            {{ probeHits.length ? probeHits.length + ' credential/dotfile probe' + (probeHits.length === 1 ? '' : 's') + ' hit the renderer' : 'No probe traffic detected' }}
+          </div>
+          <div v-if="probeHits.length" class="insight-body">
+            {{ probeIpCount }} distinct IP{{ probeIpCount === 1 ? '' : 's' }} in the current sample. Recommend blocking dotfile/credential paths at the edge before they reach the render queue — each one currently costs a full browser render.
+          </div>
+          <div v-else class="insight-body">Checked the current error/soft-404 sample against common dotfile and credential-path patterns — nothing matched.</div>
+          <div v-if="probeHits.length" class="table-scroll" style="max-height:180px; margin-top:4px;">
+            <table>
+              <thead><tr><th>URL</th><th>IP</th><th>Client</th></tr></thead>
+              <tbody>
+                <tr v-for="(h, i) in probeHits.slice(0, 8)" :key="i">
+                  <td class="url" :title="h.url">{{ h.url }}</td>
+                  <td>{{ h.ip || '' }}</td>
+                  <td>{{ friendlyAgent(h.userAgent) || h.userAgent || '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">Soft 404 root causes</h2>
+          <div v-if="!softCauses.length" class="empty">No soft 404s in this range.</div>
+          <div v-else style="display:flex; flex-direction:column; gap:10px;">
+            <div v-for="c in softCauses" :key="c.key" style="display:flex; justify-content:space-between; align-items:baseline; gap:14px; padding-bottom:9px; border-bottom:1px solid var(--gridline);">
+              <div style="min-width:0;">
+                <div style="font-size:12.5px;">{{ c.label }}</div>
+                <div class="client-ua" :title="c.example">{{ c.example }}</div>
+              </div>
+              <div style="font-family: var(--font-mono); font-size:13px; color:var(--status-warning); flex:none;">{{ c.pct }}%</div>
+            </div>
+          </div>
+          <div class="gap-note" style="margin-top:12px;">Based on the current soft-404 sample (last ~200), classified by URL shape. Not exhaustive — anything that doesn't match a known legacy pattern falls into "other".</div>
+        </div>
+      </div>
+    </div>
+
+    </main>
 
     <div id="tooltip" role="tooltip" :class="{ show: tooltip.show }" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
       <div class="tt-label">{{ tooltip.label }}</div>
@@ -637,6 +844,7 @@ createApp({
     const showDailyTable = ref(false);
     const crawlerPatterns = ref([]);
     const tooltip = reactive({ show: false, x: 0, y: 0, label: '', value: '' });
+    const activeTab = ref('overview'); // overview | live | traffic | errors
 
     function classifyUA(ua) {
       if (!ua || ua === 'unknown') return null;
@@ -734,8 +942,11 @@ createApp({
 
     // Server sends errors/restarts and soft 404s as separate "last 200" windows so
     // high-volume soft 404 bot traffic can't crowd real errors out of the payload.
-    const filteredErrors = computed(() => rawErrors.value.filter(withinRange).slice(0, 50));
-    const filteredSoftErrors = computed(() => rawSoftErrors.value.filter(withinRange).slice(0, 50));
+    // errorSample feeds the grouped-failures/security/signature computations below at
+    // full window size; filteredSoftErrors stays capped at 50 for the "recent" list view.
+    const errorSample = computed(() => rawErrors.value.filter(withinRange));
+    const softErrorSample = computed(() => rawSoftErrors.value.filter(withinRange));
+    const filteredSoftErrors = computed(() => softErrorSample.value.slice(0, 50));
 
     // Live activity has no date dimension — it's whatever's happening right now across
     // render replicas, independent of the date-range/asOf filters used everywhere else.
@@ -754,10 +965,42 @@ createApp({
       });
       return all.sort((a, b) => b.elapsedMs - a.elapsedMs);
     });
+    const instanceCards = computed(() => rawLive.value.map((i) => ({
+      instance: i.instance,
+      activeRenders: i.activeRenders,
+      queuedCount: (i.queued || []).length,
+      saturated: i.activeRenders >= MAX_CONCURRENT_RENDERS,
+      rssMB: i.rssMB,
+      openPages: i.openPages,
+    })));
+    const oldestQueuedMs = computed(() => Math.max(0, ...liveEntries.value.filter((e) => e.status !== 'inflight').map((e) => e.elapsedMs)));
+    const duplicateQueuedCount = computed(() => {
+      const byUrl = {};
+      liveEntries.value.forEach((e) => { if (e.url) byUrl[e.url] = (byUrl[e.url] || 0) + 1; });
+      return Object.values(byUrl).filter((n) => n > 1).length;
+    });
+
+    // Rough estimate only: today's average completions-per-second, applied to the
+    // current queue depth. No live throughput signal exists to do better than that —
+    // a burst of concurrent completions or a stalled instance will make this wrong in
+    // either direction, it's a ballpark, not a countdown.
+    const estimatedDrainSeconds = computed(() => {
+      const today = isoDay(new Date(NOW_MS));
+      const successToday = rawCounts.value
+        .filter((r) => r.date === today && r.type === 'render_success')
+        .reduce((sum, r) => sum + r.n, 0);
+      const secondsElapsedToday = (NOW_MS - new Date(`${today}T00:00:00.000Z`).getTime()) / 1000;
+      if (successToday < 10 || secondsElapsedToday < 60 || !totalQueued.value) return null;
+      const ratePerSecond = successToday / secondsElapsedToday;
+      return ratePerSecond > 0 ? totalQueued.value / ratePerSecond : null;
+    });
 
     // Averages, not raw events — durations are stored as a running sum+count per
     // day/domain/metric rather than one record per render, so they scale with the
-    // number of distinct days/domains, not with render volume.
+    // number of distinct days/domains, not with render volume. Buckets (added later
+    // than sum/count) are accumulated the same way so a percentile can be estimated
+    // alongside the average; rows recorded before buckets existed just contribute
+    // nothing to the histogram.
     const durationAverages = computed(() => {
       const cutoffVal = cutoff.value;
       const nowDay = isoDay(new Date(NOW_MS));
@@ -768,16 +1011,28 @@ createApp({
           && (!domainFilter.value || r.domain === domainFilter.value)
         ))
         .forEach((r) => {
-          const t = totals[r.metric] || { sum: 0, count: 0 };
-          totals[r.metric] = { sum: t.sum + r.sum, count: t.count + r.count };
+          const t = totals[r.metric] || { sum: 0, count: 0, buckets: null };
+          const buckets = t.buckets || (durationBucketBoundaries.value.length ? new Array(durationBucketBoundaries.value.length).fill(0) : null);
+          if (buckets && r.buckets) r.buckets.forEach((n, i) => { buckets[i] += n; });
+          totals[r.metric] = { sum: t.sum + r.sum, count: t.count + r.count, buckets };
         });
       const avg = (metric) => (totals[metric]?.count ? totals[metric].sum / totals[metric].count : null);
-      return { renderDurationMs: avg('renderDurationMs'), queueWaitMs: avg('queueWaitMs') };
+      const p95 = (metric) => estimatePercentile(totals[metric]?.buckets, durationBucketBoundaries.value, 0.95);
+      return {
+        renderDurationMs: avg('renderDurationMs'),
+        queueWaitMs: avg('queueWaitMs'),
+        renderDurationP95Ms: p95('renderDurationMs'),
+        queueWaitP95Ms: p95('queueWaitMs'),
+      };
     });
 
-    function formatMsAsSeconds(ms) {
-      return ms === null ? '–' : (ms / 1000).toFixed(1) + 's';
-    }
+    const renderBudget = computed(() => {
+      const { renderDurationMs, queueWaitMs, renderDurationP95Ms, queueWaitP95Ms } = durationAverages.value;
+      if (renderDurationMs === null && queueWaitMs === null) return null;
+      const total = (renderDurationMs || 0) + (queueWaitMs || 0);
+      const queuePct = total ? Math.round(((queueWaitMs || 0) / total) * 100) : 0;
+      return { renderDurationMs, queueWaitMs, queuePct, renderDurationP95Ms, queueWaitP95Ms };
+    });
 
     const kpis = computed(() => {
       const { byStatus, days, botTotal, grandTotal } = aggregates.value;
@@ -787,15 +1042,63 @@ createApp({
       const botPct = grandTotal ? (botTotal / grandTotal) * 100 : null;
 
       return [
-        { label: 'Successful renders', value: formatCompact(byStatus.success), cls: '', spark: sparkline(days.map((d) => d.success), STATUS.success.hex) },
-        { label: 'Render errors', value: formatCompact(byStatus.error), cls: '', spark: sparkline(days.map((d) => d.error), STATUS.error.hex) },
-        { label: 'Soft errors', value: formatCompact(byStatus.soft_error), cls: '', spark: sparkline(days.map((d) => d.soft_error), STATUS.soft_error.hex) },
-        { label: 'Browser restarts', value: formatCompact(byStatus.restart), cls: byStatus.restart > 0 ? 'warning' : '', spark: sparkline(days.map((d) => d.restart), STATUS.restart.hex) },
+        { label: 'Successful renders', value: formatCompact(byStatus.success), cls: '', spark: sparkline(days.map((d) => d.success), STATUS.success.fill) },
+        { label: 'Render errors', value: formatCompact(byStatus.error), cls: '', spark: sparkline(days.map((d) => d.error), STATUS.error.fill) },
+        { label: 'Soft errors', value: formatCompact(byStatus.soft_error), cls: '', spark: sparkline(days.map((d) => d.soft_error), STATUS.soft_error.fill) },
+        { label: 'Browser restarts', value: formatCompact(byStatus.restart), cls: byStatus.restart > 0 ? 'warning' : '', spark: sparkline(days.map((d) => d.restart), STATUS.restart.fill) },
         { label: 'Success rate', value: rate === null ? '–' : rate.toFixed(1) + '%', cls: rateCls, spark: null },
         { label: 'Bot traffic', value: botPct === null ? '–' : botPct.toFixed(1) + '%', cls: '', spark: null },
         { label: 'Avg render time', value: formatMsAsSeconds(durationAverages.value.renderDurationMs), cls: '', spark: null },
         { label: 'Avg queue wait', value: formatMsAsSeconds(durationAverages.value.queueWaitMs), cls: durationAverages.value.queueWaitMs > 5000 ? 'warning' : '', spark: null },
       ];
+    });
+
+    // Threshold-driven, computed from real aggregates only — no fabricated numbers.
+    // Thresholds are editorial judgment calls (same spirit as the "warning if >5s"
+    // queue-wait KPI above), not measurements themselves.
+    const insights = computed(() => {
+      const out = [];
+      const { byStatus, grandTotal } = aggregates.value;
+      const rb = renderBudget.value;
+
+      if (rb) {
+        const totalMs = (rb.renderDurationMs || 0) + (rb.queueWaitMs || 0);
+        if (totalMs > 0 && rb.queuePct >= 50) {
+          out.push({
+            tag: 'capacity',
+            title: `Queue-bound: ${rb.queuePct}% of average wait is queue time`,
+            body: `Renders spend more time waiting for a free slot than actually rendering. See the Live activity tab for current slot saturation — more capacity likely helps more than page-level optimization right now.`,
+          });
+        }
+      }
+
+      const top = botRows.value[0];
+      if (top && grandTotal && (top.total / grandTotal) >= 0.25) {
+        out.push({
+          tag: 'traffic mix',
+          title: `${top.bot} is ${((top.total / grandTotal) * 100).toFixed(1)}% of all traffic`,
+          body: `${top.total.toLocaleString()} of ${grandTotal.toLocaleString()} renders in range came from one agent. A per-agent concurrency cap or a longer cache TTL on its routes would cut load without touching page code.`,
+        });
+      }
+
+      if (grandTotal && byStatus.soft_error / grandTotal >= 0.05) {
+        out.push({
+          tag: 'quality',
+          title: `${((byStatus.soft_error / grandTotal) * 100).toFixed(1)}% of renders return nothing`,
+          body: `${byStatus.soft_error.toLocaleString()} soft 404s in range. See the Errors tab for a breakdown by likely cause.`,
+        });
+      }
+
+      const worstBot = botRows.value.filter((b) => b.total >= 20).sort((a, b) => (b.error / b.total) - (a.error / a.total))[0];
+      if (worstBot && (worstBot.error / worstBot.total) >= 0.35) {
+        out.push({
+          tag: 'reliability',
+          title: `${worstBot.bot} fails ${((worstBot.error / worstBot.total) * 100).toFixed(1)}% of the time`,
+          body: `Based on ${worstBot.total.toLocaleString()} requests from this agent in range. Worth a shorter navigation timeout or serving cache/503 instead of queueing it.`,
+        });
+      }
+
+      return out;
     });
 
     const dailyTableRows = computed(() => aggregates.value.days.slice().reverse().map((d) => ({
@@ -839,7 +1142,7 @@ createApp({
           const drawH = Math.max(0, segH - (hasAbove ? gap : 0));
           y = topY;
 
-          const fill = STATUS[status].hex;
+          const fill = STATUS[status].fill;
           if (idx === topIndex && drawH > 0) {
             // Rounded-top bar: a small rounded rect on top, then a plain rect squares off the bottom
             // so only the top corners of the stack appear rounded.
@@ -872,13 +1175,118 @@ createApp({
         domain: r.domain,
         segments: ['success', 'error', 'soft_error', 'restart']
           .filter((s) => r[s])
-          .map((s) => ({ status: s, pct: (r[s] / max) * 100, color: STATUS[s].hex, value: r[s] })),
+          .map((s) => ({ status: s, pct: (r[s] / max) * 100, color: STATUS[s].fill, value: r[s] })),
       }));
     });
 
-    const botRows = computed(() => Object.entries(aggregates.value.byBot).map(([bot, s]) => ({
-      bot, ...s, total: s.success + s.error + s.restart + s.soft_error,
-    })).sort((a, b) => b.total - a.total));
+    const botRows = computed(() => {
+      const grandTotal = aggregates.value.grandTotal;
+      const rows = Object.entries(aggregates.value.byBot).map(([bot, s]) => ({
+        bot, ...s, total: s.success + s.error + s.restart + s.soft_error,
+      })).sort((a, b) => b.total - a.total);
+      const maxTotal = Math.max(1, ...rows.map((r) => r.total));
+      return rows.map((r) => {
+        const rate = r.total ? (r.error / r.total) * 100 : 0;
+        const share = grandTotal ? (r.total / grandTotal) * 100 : 0;
+        let flag = '';
+        if (rate >= 40 && r.total >= 20) flag = 'throttle candidate';
+        else if (grandTotal && share >= 15) flag = 'cache route candidate';
+        return { ...r, rate, sharePct: share.toFixed(1), shareWidthPct: (r.total / maxTotal) * 100, flag };
+      });
+    });
+
+    // Scoped to successful renders reported since the duplicate-tracking rollout — days
+    // before that have no rows here at all, not zero rows, so an all-range query just
+    // reflects a smaller effective window rather than under-counting silently.
+    const duplicateStats = computed(() => {
+      const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
+      let totalRenders = 0;
+      let duplicateRenders = 0;
+      rawDuplicates.value
+        .filter((r) => r.date >= cutoffVal && r.date <= nowDay && (!domainFilter.value || r.domain === domainFilter.value))
+        .forEach((r) => { totalRenders += r.totalRenders; duplicateRenders += r.duplicateRenders; });
+      return { totalRenders, duplicateRenders, pct: totalRenders ? (duplicateRenders / totalRenders) * 100 : null };
+    });
+
+    const trafficKpis = computed(() => {
+      const { botTotal, grandTotal } = aggregates.value;
+      const humanPct = grandTotal ? ((grandTotal - botTotal) / grandTotal) * 100 : null;
+      const top = botRows.value[0];
+      const topSharePct = top && grandTotal ? (top.total / grandTotal) * 100 : null;
+      const aiTotal = botRows.value.filter((b) => isAiCrawlerLabel(b.bot)).reduce((s, b) => s + b.total, 0);
+      const aiSharePct = grandTotal ? (aiTotal / grandTotal) * 100 : null;
+      const dup = duplicateStats.value;
+      return [
+        { label: 'Human traffic', value: humanPct === null ? '–' : humanPct.toFixed(1) + '%', sub: `of ${grandTotal.toLocaleString()} renders in range` },
+        { label: 'Top-agent concentration', value: topSharePct === null ? '–' : topSharePct.toFixed(1) + '%', sub: top ? top.bot : 'no bot traffic yet' },
+        { label: 'AI crawler share', value: aiSharePct === null ? '–' : aiSharePct.toFixed(1) + '%', sub: 'heuristic match on known AI-agent names, not the vendored list' },
+        { label: 'Duplicate renders', value: dup.pct === null ? '–' : dup.pct.toFixed(1) + '%', sub: dup.totalRenders ? `${dup.duplicateRenders.toLocaleString()} of ${dup.totalRenders.toLocaleString()} successful renders repeated the same URL same day` : 'no successful renders in range yet' },
+      ];
+    });
+
+    // Same "since rollout" caveat as duplicateStats — normalization is a generic
+    // heuristic (see routePattern.js), not a precise router, so treat this as "roughly
+    // this template" rather than an exact grouping.
+    const routePatternRows = computed(() => {
+      const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
+      const totals = {};
+      rawRoutePatterns.value
+        .filter((r) => r.date >= cutoffVal && r.date <= nowDay && (!domainFilter.value || r.domain === domainFilter.value))
+        .forEach((r) => { totals[r.pattern] = (totals[r.pattern] || 0) + r.n; });
+      const rows = Object.entries(totals).map(([pattern, n]) => ({ pattern, n })).sort((a, b) => b.n - a.n).slice(0, 8);
+      const max = Math.max(1, ...rows.map((r) => r.n));
+      return rows.map((r) => ({ ...r, widthPct: (r.n / max) * 100 }));
+    });
+
+    const failuresInRange = computed(() => aggregates.value.byStatus.error + aggregates.value.byStatus.soft_error);
+
+    const errorGroups = computed(() => {
+      const map = new Map();
+      errorSample.value.forEach((e) => {
+        const key = normalizeSignature(e);
+        if (!map.has(key)) map.set(key, { key, type: e.type, count: 0, sample: e.url || '', clients: {}, last: e.timestamp });
+        const g = map.get(key);
+        g.count += 1;
+        if (e.timestamp > g.last) g.last = e.timestamp;
+        const label = friendlyAgent(e.userAgent) || 'unknown';
+        g.clients[label] = (g.clients[label] || 0) + 1;
+      });
+      return Array.from(map.values())
+        .map((g) => {
+          const topClient = Object.entries(g.clients).sort((a, b) => b[1] - a[1])[0];
+          return { ...g, topClient: topClient ? topClient[0] : '' };
+        })
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 12);
+    });
+    const distinctSignatureCount = computed(() => new Set(errorSample.value.map(normalizeSignature)).size);
+
+    const mtbfLabel = computed(() => {
+      const restarts = aggregates.value.byStatus.restart;
+      if (!restarts) return 'none in range';
+      const rangeMs = rangeDays.value * DAY_MS;
+      const mtbfHours = rangeMs / restarts / (60 * 60 * 1000);
+      return mtbfHours >= 1 ? `~1 every ${mtbfHours.toFixed(1)}h` : `~1 every ${(mtbfHours * 60).toFixed(0)}m`;
+    });
+
+    const probeHits = computed(() => [...errorSample.value, ...softErrorSample.value].filter((e) => isProbePath(e.url)));
+    const probeIpCount = computed(() => new Set(probeHits.value.map((h) => h.ip).filter(Boolean)).size);
+
+    const softCauses = computed(() => {
+      const sample = softErrorSample.value;
+      if (!sample.length) return [];
+      const buckets = {};
+      sample.forEach((e) => {
+        const key = classifySoft404(e.url);
+        buckets[key] = buckets[key] || { count: 0, example: e.url || '' };
+        buckets[key].count += 1;
+      });
+      return Object.entries(buckets)
+        .map(([key, b]) => ({ key, label: SOFT404_CAUSE_LABELS[key], example: b.example, pct: ((b.count / sample.length) * 100).toFixed(0) }))
+        .sort((a, b) => b.pct - a.pct);
+    });
 
     function toggleStatus(status) {
       if (statusFilter.has(status)) statusFilter.delete(status);
@@ -944,12 +1352,15 @@ createApp({
     });
 
     return {
-      STATUS, STATUS_KEYS, RANGE_OPTIONS,
-      rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable,
-      retentionDays, domains, kpis, dailyTableRows, dailyChart, domainRows, domainBarVM, botRows, filteredErrors, filteredSoftErrors,
-      liveInstances, liveEntries, totalRendering, totalQueued,
+      STATUS, STATUS_KEYS, RANGE_OPTIONS, MAX_CONCURRENT_RENDERS,
+      rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable, activeTab,
+      retentionDays, domains, kpis, insights, dailyTableRows, dailyChart, domainRows, domainBarVM,
+      botRows, filteredSoftErrors, errorGroups, distinctSignatureCount, mtbfLabel,
+      probeHits, probeIpCount, softCauses, trafficKpis, renderBudget, routePatternRows, failuresInRange, aggregates,
+      liveInstances, liveEntries, totalRendering, totalQueued, instanceCards, oldestQueuedMs, duplicateQueuedCount, estimatedDrainSeconds,
       tooltip,
       rangeLabel, toggleStatus, resetStatus, showTip, hideTip, statusOf, friendlyAgent, badgeIcon,
+      formatCompact, formatMsAsSeconds,
     };
   },
 }).mount('#app');
