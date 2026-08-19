@@ -21,7 +21,40 @@ app.post('/events', (req, res) => {
   if (event.type !== 'render_success') {
     store.appendEvent(event);
   }
+  if (typeof event.durationMs === 'number') {
+    store.recordDuration(event.domain, 'renderDurationMs', event.durationMs);
+  }
+  if (typeof event.queueWaitMs === 'number') {
+    store.recordDuration(event.domain, 'queueWaitMs', event.queueWaitMs);
+  }
   res.sendStatus(204);
+});
+
+// Live render activity, per instance — in-memory only, never persisted. Unlike
+// counts/durations/events this has no historical value once an instance goes quiet,
+// so it's kept separate from the rest of the store rather than written to disk.
+const LIVE_INSTANCE_STALE_MS = 60 * 1000;
+const liveInstances = {};
+
+app.post('/live-status', (req, res) => {
+  const { instance, activeRenders, rendering, queued } = req.body || {};
+  if (!instance) return res.sendStatus(400);
+  liveInstances[instance] = { activeRenders, rendering, queued, updatedAt: Date.now() };
+  res.sendStatus(204);
+});
+
+app.get('/api/live', (req, res) => {
+  const now = Date.now();
+  const instances = Object.entries(liveInstances)
+    .filter(([, v]) => now - v.updatedAt < LIVE_INSTANCE_STALE_MS)
+    .map(([instance, v]) => ({
+      instance,
+      activeRenders: v.activeRenders,
+      rendering: v.rendering || [],
+      queued: v.queued || [],
+      ageMs: now - v.updatedAt,
+    }));
+  res.json({ instances });
 });
 
 // Pre-migration data (before per-bot-name tracking) stored this bucket's bot traffic
@@ -61,9 +94,19 @@ app.get('/api/stats', (req, res) => {
   const recentErrors = allEvents.filter((e) => e.type !== 'soft_404').slice(-200).reverse();
   const recentSoftErrors = allEvents.filter((e) => e.type === 'soft_404').slice(-200).reverse();
 
+  const durationRows = [];
+  Object.entries(store.readDurations()).forEach(([date, domains]) => {
+    Object.entries(domains).forEach(([domain, metrics]) => {
+      Object.entries(metrics).forEach(([metric, { sum, count }]) => {
+        durationRows.push({ date, domain, metric, sum, count });
+      });
+    });
+  });
+
   res.json({
     retentionDays: store.RETENTION_DAYS,
     counts: rows,
+    durations: durationRows,
     recentErrors,
     recentSoftErrors,
   });
@@ -78,6 +121,7 @@ app.listen(PORT, () => {
 setInterval(() => {
   const remaining = store.pruneOldEvents();
   store.pruneOldCounts();
+  store.pruneOldDurations();
   console.log(`Pruned stats events, ${remaining} remaining`);
 }, PRUNE_INTERVAL_MS);
 

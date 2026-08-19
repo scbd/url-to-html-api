@@ -4,6 +4,7 @@ const path = require('path');
 const DATA_DIR = process.env.STATS_DATA_DIR || path.join(__dirname, '../../data');
 const EVENTS_FILE = path.join(DATA_DIR, 'events.jsonl');
 const COUNTS_FILE = path.join(DATA_DIR, 'counts.json');
+const DURATIONS_FILE = path.join(DATA_DIR, 'durations.json');
 const RETENTION_DAYS = 30;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -50,6 +51,48 @@ function pruneOldCounts() {
   saveCounts();
 }
 
+function loadDurations() {
+  if (!fs.existsSync(DURATIONS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(DURATIONS_FILE, 'utf8'));
+  } catch (e) {
+    return {};
+  }
+}
+
+const durations = loadDurations();
+
+function saveDurations() {
+  fs.writeFile(DURATIONS_FILE, JSON.stringify(durations), (err) => {
+    if (err) console.error('Failed to write stats durations', err);
+  });
+}
+
+// Tracks a running sum+count per day/domain/metric so an average can be computed later,
+// without storing one record per render the way appendEvent's raw event log would.
+function recordDuration(domain, metric, ms) {
+  if (typeof ms !== 'number') return;
+  const day = new Date().toISOString().slice(0, 10);
+  const d = domain || 'unknown';
+  durations[day] = durations[day] || {};
+  durations[day][d] = durations[day][d] || {};
+  const existing = durations[day][d][metric] || { sum: 0, count: 0 };
+  durations[day][d][metric] = { sum: existing.sum + ms, count: existing.count + 1 };
+  saveDurations();
+}
+
+function readDurations() {
+  return durations;
+}
+
+function pruneOldDurations() {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  Object.keys(durations).forEach((day) => {
+    if (day < cutoff) delete durations[day];
+  });
+  saveDurations();
+}
+
 function appendEvent(event) {
   const record = { ...event, timestamp: new Date().toISOString() };
   fs.appendFile(EVENTS_FILE, JSON.stringify(record) + '\n', (err) => {
@@ -86,5 +129,8 @@ module.exports = {
   incrementCount,
   readCounts,
   pruneOldCounts,
+  recordDuration,
+  readDurations,
+  pruneOldDurations,
   RETENTION_DAYS,
 };

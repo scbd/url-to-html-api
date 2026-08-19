@@ -108,6 +108,10 @@
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); }
   th { color: var(--text-muted); font-weight: 500; font-size: 12px; }
+
+  .table-scroll { max-height: 640px; overflow-y: auto; }
+  .table-scroll thead th { position: sticky; top: 0; background: var(--page-plane); z-index: 1; }
+  .table-scroll.surface thead th { background: var(--surface-1); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.url { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
   .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-secondary); }
@@ -135,6 +139,43 @@
 </head>
 <body>
   <div id="app">
+    <h2>Live render activity</h2>
+    <div v-if="!liveInstances.length" class="card" style="padding:16px 20px; margin-bottom:24px;">
+      <div class="empty">No render instances reporting right now.</div>
+    </div>
+    <div v-else style="margin-bottom:24px;">
+      <div class="kpis" style="margin-bottom:12px;">
+        <div class="card tile">
+          <div class="tile-label">Total rendering</div>
+          <div class="tile-value">{{ totalRendering }}</div>
+        </div>
+        <div class="card tile">
+          <div class="tile-label">Total queued</div>
+          <div class="tile-value">{{ totalQueued }}</div>
+        </div>
+        <div class="card tile" v-for="inst in liveInstances" :key="inst.instance">
+          <div class="tile-label" :title="inst.instance">{{ inst.instance }}</div>
+          <div class="tile-value">{{ inst.activeRenders }}</div>
+          <div class="tile-foot">{{ inst.queuedCount }} queued</div>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Instance</th><th>Status</th><th>URL</th><th class="num">Elapsed</th><th>Client</th></tr></thead>
+          <tbody>
+            <tr v-if="!liveEntries.length"><td colspan="5" class="empty">Nothing in flight right now.</td></tr>
+            <tr v-for="(e, i) in liveEntries" :key="i">
+              <td>{{ e.instance }}</td>
+              <td>{{ e.status === 'inflight' ? 'Rendering' : 'Queued' }}</td>
+              <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+              <td class="num">{{ (e.elapsedMs / 1000).toFixed(1) }}s</td>
+              <td>{{ friendlyAgent(e.userAgent) || e.userAgent || '' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
    <div id="snap-section-1">
     <h1>Prerender activity</h1>
     <div class="sub">up to {{ retentionDays }} days retained</div>
@@ -215,7 +256,7 @@
           <text v-for="(l, i) in dailyChart.labels" :key="'l' + i" :x="l.x" :y="dailyChart.height" text-anchor="middle">{{ l.text }}</text>
         </svg>
       </div>
-      <div v-show="showDailyTable">
+      <div v-show="showDailyTable" class="table-scroll surface">
         <table>
           <thead><tr><th>Date</th><th class="num">Success</th><th class="num">Error</th><th class="num">Restart</th><th class="num">Soft error</th><th class="num">Total</th></tr></thead>
           <tbody>
@@ -250,88 +291,96 @@
         </div>
       </div>
     </div>
-    <table style="margin-top:12px">
-      <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
-      <tbody>
-        <tr v-if="!domainRows.length"><td colspan="7" class="empty">No data yet.</td></tr>
-        <tr v-for="r in domainRows" :key="r.domain">
-          <td>{{ r.domain }}</td>
-          <td class="num">{{ r.total.toLocaleString() }}</td>
-          <td class="num">{{ r.success.toLocaleString() }}</td>
-          <td class="num">{{ r.error.toLocaleString() }}</td>
-          <td class="num">{{ r.restart.toLocaleString() }}</td>
-          <td class="num">{{ r.soft_error.toLocaleString() }}</td>
-          <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="table-scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
+        <tbody>
+          <tr v-if="!domainRows.length"><td colspan="7" class="empty">No data yet.</td></tr>
+          <tr v-for="r in domainRows" :key="r.domain">
+            <td>{{ r.domain }}</td>
+            <td class="num">{{ r.total.toLocaleString() }}</td>
+            <td class="num">{{ r.success.toLocaleString() }}</td>
+            <td class="num">{{ r.error.toLocaleString() }}</td>
+            <td class="num">{{ r.restart.toLocaleString() }}</td>
+            <td class="num">{{ r.soft_error.toLocaleString() }}</td>
+            <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
    </div>
 
    <div id="snap-section-2">
     <h2>By bot</h2>
-    <table>
-      <thead><tr><th>Bot</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
-      <tbody>
-        <tr v-if="!botRows.length"><td colspan="7" class="empty">No bot traffic in this range.</td></tr>
-        <tr v-for="r in botRows" :key="r.bot">
-          <td>{{ r.bot }}</td>
-          <td class="num">{{ r.total.toLocaleString() }}</td>
-          <td class="num">{{ r.success.toLocaleString() }}</td>
-          <td class="num">{{ r.error.toLocaleString() }}</td>
-          <td class="num">{{ r.restart.toLocaleString() }}</td>
-          <td class="num">{{ r.soft_error.toLocaleString() }}</td>
-          <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Bot</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
+        <tbody>
+          <tr v-if="!botRows.length"><td colspan="7" class="empty">No bot traffic in this range.</td></tr>
+          <tr v-for="r in botRows" :key="r.bot">
+            <td>{{ r.bot }}</td>
+            <td class="num">{{ r.total.toLocaleString() }}</td>
+            <td class="num">{{ r.success.toLocaleString() }}</td>
+            <td class="num">{{ r.error.toLocaleString() }}</td>
+            <td class="num">{{ r.restart.toLocaleString() }}</td>
+            <td class="num">{{ r.soft_error.toLocaleString() }}</td>
+            <td class="num">{{ r.total ? ((r.error / r.total) * 100).toFixed(1) + '%' : '0.0%' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
    </div>
 
    <div id="snap-section-3">
     <h2>Recent errors &amp; restarts</h2>
-    <table>
-      <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
-      <tbody>
-        <tr v-if="!filteredErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
-        <tr v-for="(e, i) in filteredErrors" :key="i">
-          <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
-          <td>
-            <span class="badge">
-              <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
-              <span>{{ e.type }}</span>
-            </span>
-          </td>
-          <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
-          <td>
-            <div>{{ e.ip || '' }}</div>
-            <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
-          </td>
-          <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr v-if="!filteredErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
+          <tr v-for="(e, i) in filteredErrors" :key="i">
+            <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+            <td>
+              <span class="badge">
+                <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
+                <span>{{ e.type }}</span>
+              </span>
+            </td>
+            <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+            <td>
+              <div>{{ e.ip || '' }}</div>
+              <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
+            </td>
+            <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <h2>Recent soft 404s</h2>
-    <table>
-      <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
-      <tbody>
-        <tr v-if="!filteredSoftErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
-        <tr v-for="(e, i) in filteredSoftErrors" :key="i">
-          <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
-          <td>
-            <span class="badge">
-              <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
-              <span>{{ e.type }}</span>
-            </span>
-          </td>
-          <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
-          <td>
-            <div>{{ e.ip || '' }}</div>
-            <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
-          </td>
-          <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>URL</th><th>Client</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr v-if="!filteredSoftErrors.length"><td colspan="5" class="empty">Nothing in this range.</td></tr>
+          <tr v-for="(e, i) in filteredSoftErrors" :key="i">
+            <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+            <td>
+              <span class="badge">
+                <svg viewBox="0 0 12 12" v-html="badgeIcon(statusOf(e.type))"></svg>
+                <span>{{ e.type }}</span>
+              </span>
+            </td>
+            <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+            <td>
+              <div>{{ e.ip || '' }}</div>
+              <div v-if="friendlyAgent(e.userAgent)" class="client-ua" :title="[e.userAgent, e.referer].filter(Boolean).join(' · ')">{{ friendlyAgent(e.userAgent) }}</div>
+            </td>
+            <td>{{ (e.error || e.reason || '').slice(0, 140) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
    </div>
 
     <div id="tooltip" role="tooltip" :class="{ show: tooltip.show }" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
@@ -430,8 +479,10 @@ function badgeIcon(status) {
 createApp({
   setup() {
     const rawCounts = ref([]);
+    const rawDurations = ref([]);
     const rawErrors = ref([]);
     const rawSoftErrors = ref([]);
+    const rawLive = ref([]);
     const retentionDays = ref(30);
     const rangeDays = ref(1);
     const domainFilter = ref('');
@@ -541,6 +592,48 @@ createApp({
     const filteredErrors = computed(() => rawErrors.value.filter(withinRange).slice(0, 50));
     const filteredSoftErrors = computed(() => rawSoftErrors.value.filter(withinRange).slice(0, 50));
 
+    // Live activity has no date dimension — it's whatever's happening right now across
+    // render replicas, independent of the date-range/asOf filters used everywhere else.
+    const liveInstances = computed(() => rawLive.value.map((i) => ({
+      instance: i.instance,
+      activeRenders: i.activeRenders,
+      queuedCount: (i.queued || []).length,
+    })));
+    const totalRendering = computed(() => liveInstances.value.reduce((sum, i) => sum + i.activeRenders, 0));
+    const totalQueued = computed(() => liveInstances.value.reduce((sum, i) => sum + i.queuedCount, 0));
+    const liveEntries = computed(() => {
+      const all = [];
+      rawLive.value.forEach((i) => {
+        (i.rendering || []).forEach((e) => all.push({ ...e, instance: i.instance }));
+        (i.queued || []).forEach((e) => all.push({ ...e, instance: i.instance }));
+      });
+      return all.sort((a, b) => b.elapsedMs - a.elapsedMs);
+    });
+
+    // Averages, not raw events — durations are stored as a running sum+count per
+    // day/domain/metric rather than one record per render, so they scale with the
+    // number of distinct days/domains, not with render volume.
+    const durationAverages = computed(() => {
+      const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
+      const totals = {};
+      rawDurations.value
+        .filter((r) => (
+          r.date >= cutoffVal && r.date <= nowDay
+          && (!domainFilter.value || r.domain === domainFilter.value)
+        ))
+        .forEach((r) => {
+          const t = totals[r.metric] || { sum: 0, count: 0 };
+          totals[r.metric] = { sum: t.sum + r.sum, count: t.count + r.count };
+        });
+      const avg = (metric) => (totals[metric]?.count ? totals[metric].sum / totals[metric].count : null);
+      return { renderDurationMs: avg('renderDurationMs'), queueWaitMs: avg('queueWaitMs') };
+    });
+
+    function formatMsAsSeconds(ms) {
+      return ms === null ? '–' : (ms / 1000).toFixed(1) + 's';
+    }
+
     const kpis = computed(() => {
       const { byStatus, days, botTotal, grandTotal } = aggregates.value;
       const total = byStatus.success + byStatus.error;
@@ -555,6 +648,8 @@ createApp({
         { label: 'Browser restarts', value: formatCompact(byStatus.restart), cls: byStatus.restart > 0 ? 'warning' : '', spark: sparkline(days.map((d) => d.restart), STATUS.restart.hex) },
         { label: 'Success rate', value: rate === null ? '–' : rate.toFixed(1) + '%', cls: rateCls, spark: null },
         { label: 'Bot traffic', value: botPct === null ? '–' : botPct.toFixed(1) + '%', cls: '', spark: null },
+        { label: 'Avg render time', value: formatMsAsSeconds(durationAverages.value.renderDurationMs), cls: '', spark: null },
+        { label: 'Avg queue wait', value: formatMsAsSeconds(durationAverages.value.queueWaitMs), cls: durationAverages.value.queueWaitMs > 5000 ? 'warning' : '', spark: null },
       ];
     });
 
@@ -674,15 +769,22 @@ createApp({
       const res = await fetch(`http://localhost:7200/api/stats${qs}`);
       const data = await res.json();
       rawCounts.value = data.counts;
+      rawDurations.value = data.durations || [];
       rawErrors.value = data.recentErrors || [];
       rawSoftErrors.value = data.recentSoftErrors || [];
       retentionDays.value = data.retentionDays;
     }
 
+    async function loadLiveStatus() {
+      const res = await fetch('http://localhost:7200/api/live');
+      const data = await res.json();
+      rawLive.value = data.instances || [];
+    }
+
     let refreshTimer = null;
     function setRefreshInterval(ms) {
       if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = ms > 0 ? setInterval(loadStats, ms) : null;
+      refreshTimer = ms > 0 ? setInterval(() => { loadStats(); loadLiveStatus(); }, ms) : null;
     }
     watch(refreshMs, (ms) => setRefreshInterval(ms), { immediate: true });
     onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer); });
@@ -690,12 +792,14 @@ createApp({
     onMounted(async () => {
       await loadCrawlerPatterns();
       await loadStats();
+      await loadLiveStatus();
     });
 
     return {
       STATUS, STATUS_KEYS, RANGE_OPTIONS,
       rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable,
       retentionDays, domains, kpis, dailyTableRows, dailyChart, domainRows, domainBarVM, botRows, filteredErrors, filteredSoftErrors,
+      liveInstances, liveEntries, totalRendering, totalQueued,
       tooltip,
       rangeLabel, toggleStatus, resetStatus, showTip, hideTip, statusOf, friendlyAgent, badgeIcon,
     };

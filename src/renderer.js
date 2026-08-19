@@ -1,15 +1,26 @@
 ﻿
 const url       = require('url');
+const os        = require('os');
 // const chrome    = require("@sparticuz/chromium")
 const puppeteer = require("puppeteer")
 const { forEach, findKey }  = require('lodash');
 const querySting = require('querystring');
 const config = require('./config');
 
+// Swarm replicas share one log stream; this tags every log line from this process so
+// activity from different replicas isn't confused with each other when reading logs.
+const INSTANCE_ID = os.hostname();
+
 let browser;
 const cacheControl = 7*24*60*60; //7days
 // On top of your code
 let restartBrowser = false;
+const MAX_CONCURRENT_RENDERS = 4;
+// Tracks renders dispatched but not yet finished, incremented synchronously the instant
+// renderHtml is called. browser.pages().length lags behind (page creation is async), so
+// using it as the concurrency gate let processInflightRequest's loop dispatch far more
+// than MAX_CONCURRENT_RENDERS renders before the page count caught up.
+let activeRenders = 0;
 
 // Soft-404s: SPAs that return HTTP 200 with a shell page but render a "not found"
 // state client-side for routes with no matching data. Add signatures here as they're found.
@@ -36,6 +47,17 @@ function reportEvent(type, payload){
         signal: AbortSignal.timeout(2000)
     }).catch((e)=>{
         log(`Failed to report stats event to ${STATS_URL}`, e ? e.toString() : 'unknown');
+    });
+}
+
+function reportLiveStatus(payload){
+    fetch(`${STATS_URL}/live-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(2000)
+    }).catch((e)=>{
+        log(`Failed to report live status to ${STATS_URL}`, e ? e.toString() : 'unknown');
     });
 }
 
@@ -96,7 +118,17 @@ async function initializeChrome(){
         }
 
         browser = await puppeteer.launch(chromeOptions)
-        
+
+        // Fires on a real crash/OOM-kill, not on our own deliberate restartChrome() close
+        // (that already sets browser = undefined before this listener would matter).
+        // Reuses the existing browser_restart category so the dashboard needs no changes;
+        // the reason text is what distinguishes a crash from a normal render-triggered restart.
+        browser.on('disconnected', () => {
+            logError(`[${INSTANCE_ID}] Browser disconnected unexpectedly`);
+            reportEvent('browser_restart', { reason: 'Browser process disconnected unexpectedly (crash or external kill)' });
+            restartBrowser = true;
+        });
+
         let numberOfOpenPages = (await browser.pages()).length
         if(numberOfOpenPages == 0){
             //fake page so that if the last tap is closed the instance stays in memory
@@ -287,17 +319,15 @@ async function hasFreeTabs(){
     if(!browser)
         await initializeChrome();
 
-    let numberOfOpenPages = (await browser.pages()).length
     let waitedSeconds = 0
-    if(numberOfOpenPages > 4){
-        log(`number of inflight request have reached limit, ${numberOfOpenPages}.
+    if(activeRenders >= MAX_CONCURRENT_RENDERS){
+        log(`number of concurrent renders have reached limit, ${activeRenders}.
             no of inflight request ${Object.keys(inflightRequests)?.length}.
             waitedSeconds : ${waitedSeconds}`);
 
-        while(numberOfOpenPages > 4){
+        while(activeRenders >= MAX_CONCURRENT_RENDERS){
             await sleep(1000);
             waitedSeconds += 1000;
-            numberOfOpenPages = (await browser.pages()).length
         }
     }
 
@@ -339,9 +369,10 @@ async function renderHtml (urlRequest){
     let response;
     let page;
 
+    activeRenders++;
     let reqStatus = {};
-    try {        
-            
+    try {
+
             urlRequest.status = 'inflight';
             
             await initializeChrome();
@@ -455,7 +486,7 @@ async function renderHtml (urlRequest){
                 const elapsedMs = Date.now() - navStartedOn;
                 if(elapsedMs < 60*1000) return;
                 const pending = Object.keys(reqStatus);
-                logError(`Render for ${clientUrl} still waiting on network idle after ${(elapsedMs/1000).toFixed(0)}s, pending requests (${pending.length}):`, pending.slice(0, 20));
+                logError(`[${INSTANCE_ID}] Render for ${clientUrl} still waiting on network idle after ${(elapsedMs/1000).toFixed(0)}s, pending requests (${pending.length}):`, pending.slice(0, 20));
             }, 15*1000);
 
             try{
@@ -527,7 +558,13 @@ async function renderHtml (urlRequest){
             urlRequest.content = pageContent;
             urlRequest.renderFinishedOn = new Date();
 
-            reportEvent('render_success', { url: clientUrl, domain: htmlUrl.hostname, durationMs: (+new Date())-startTime, userAgent: urlRequest.userAgent });
+            reportEvent('render_success', {
+                url: clientUrl,
+                domain: htmlUrl.hostname,
+                durationMs: (+new Date())-startTime,
+                queueWaitMs: urlRequest.renderStartedOn.getTime() - urlRequest.requestDate.getTime(),
+                userAgent: urlRequest.userAgent
+            });
 
     } catch (err) {
 
@@ -537,14 +574,21 @@ async function renderHtml (urlRequest){
         urlRequest.renderErrorOn = new Date();
 
         if(Object.keys(reqStatus)?.length)
-            logError(`Pending requests :`, reqStatus)
+            logError(`[${INSTANCE_ID}] Pending requests :`, reqStatus)
 
         urlRequest.status = 'error';
+
+        // null when the failure happened before renderStartedOn was ever set (e.g. Chrome
+        // itself failed to initialize) — there's no queue-wait to report in that case.
+        const queueWaitMs = urlRequest.renderStartedOn
+            ? urlRequest.renderStartedOn.getTime() - urlRequest.requestDate.getTime()
+            : null;
 
         reportEvent('render_error', {
             url: clientUrl,
             domain: safeHostname(clientUrl),
             error: errorMessage,
+            queueWaitMs,
             ip: urlRequest.ip,
             userAgent: urlRequest.userAgent,
             referer: urlRequest.referer,
@@ -557,6 +601,7 @@ async function renderHtml (urlRequest){
             url: clientUrl,
             domain: safeHostname(clientUrl),
             reason: errorMessage,
+            queueWaitMs,
             ip: urlRequest.ip,
             userAgent: urlRequest.userAgent,
             referer: urlRequest.referer,
@@ -564,9 +609,10 @@ async function renderHtml (urlRequest){
         });
     }
     finally{
+        activeRenders--;
         if(page){
             try{
-                await page.close();            
+                await page.close();
             }
             catch(e){
                 logError(`unable to close the page ${clientUrl}`);
@@ -707,13 +753,41 @@ async function captureDiagnostics(){
         openPages = 'unavailable';
     }
     return {
+        instance: INSTANCE_ID,
         rssMB: Math.round(mem.rss / (1024*1024)),
         heapUsedMB: Math.round(mem.heapUsed / (1024*1024)),
         externalMB: Math.round(mem.external / (1024*1024)),
         inflightCount: getInflightCount(),
+        activeRenders,
         openPages
     };
 }
+
+function logInflightSnapshot(){
+    const entries = Object.values(inflightRequests);
+    const now = Date.now();
+    const detail = entries.map(r => ({
+        url: r.url,
+        status: r.status,
+        elapsedMs: now - r.requestDate.getTime(),
+        userAgent: r.userAgent
+    }));
+    const rendering = detail.filter(e => e.status === 'inflight');
+    const queued = detail.filter(e => e.status === 'request');
+
+    if(entries.length > 0){
+        logError(
+            `[${INSTANCE_ID}] Live render snapshot — activeRenders: ${activeRenders}, rendering: ${rendering.length}, queued: ${queued.length}`,
+            { rendering, queued }
+        );
+    }
+
+    // Reported unconditionally (even when empty) so the dashboard clears an instance's
+    // display when it goes idle instead of showing its last-known busy state forever.
+    reportLiveStatus({ instance: INSTANCE_ID, activeRenders, rendering, queued });
+}
+
+setInterval(logInflightSnapshot, 15*1000);
 
 module.exports = {
     renderUrl,
