@@ -53,6 +53,19 @@ function pruneOldCounts() {
   saveCounts();
 }
 
+// Upper bound (ms) of each latency bucket — a render/queue-wait falls in the first
+// bucket whose boundary is >= its duration. Fixed, coarse-grained boundaries rather
+// than exact samples: bounded storage per day/domain/metric regardless of render
+// volume, at the cost of the percentile only being accurate to the nearest bucket edge.
+const DURATION_BUCKETS_MS = [100, 250, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 120000, 300000, Infinity];
+
+function durationBucketIndex(ms) {
+  for (let i = 0; i < DURATION_BUCKETS_MS.length; i++) {
+    if (ms <= DURATION_BUCKETS_MS[i]) return i;
+  }
+  return DURATION_BUCKETS_MS.length - 1;
+}
+
 function loadDurations() {
   if (!fs.existsSync(DURATIONS_FILE)) return {};
   try {
@@ -71,15 +84,20 @@ function saveDurations() {
 }
 
 // Tracks a running sum+count per day/domain/metric so an average can be computed later,
-// without storing one record per render the way appendEvent's raw event log would.
+// without storing one record per render the way appendEvent's raw event log would. The
+// bucket histogram alongside it is what lets a percentile be estimated later too —
+// entries recorded before the histogram was added just have no `buckets` array, so
+// their contribution to a percentile estimate is silently zero rather than wrong.
 function recordDuration(domain, metric, ms) {
   if (typeof ms !== 'number') return;
   const day = new Date().toISOString().slice(0, 10);
   const d = domain || 'unknown';
   durations[day] = durations[day] || {};
   durations[day][d] = durations[day][d] || {};
-  const existing = durations[day][d][metric] || { sum: 0, count: 0 };
-  durations[day][d][metric] = { sum: existing.sum + ms, count: existing.count + 1 };
+  const existing = durations[day][d][metric] || { sum: 0, count: 0, buckets: new Array(DURATION_BUCKETS_MS.length).fill(0) };
+  const buckets = existing.buckets || new Array(DURATION_BUCKETS_MS.length).fill(0);
+  buckets[durationBucketIndex(ms)] += 1;
+  durations[day][d][metric] = { sum: existing.sum + ms, count: existing.count + 1, buckets };
   saveDurations();
 }
 
@@ -222,5 +240,12 @@ module.exports = {
   recordDuration,
   readDurations,
   pruneOldDurations,
+  DURATION_BUCKETS_MS,
+  recordUrlSeen,
+  readUrlSeen,
+  pruneOldUrlSeen,
+  incrementRoutePattern,
+  readRoutePatterns,
+  pruneOldRoutePatterns,
   RETENTION_DAYS,
 };
