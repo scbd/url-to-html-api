@@ -13,6 +13,18 @@ const INSTANCE_ID = os.hostname();
 
 let browser;
 const cacheControl = 7*24*60*60; //7days
+
+// Slow-changing API calls made by rendered pages (e.g. thesaurus lookups) are cached
+// in-process across renders so repeated terms don't hit the origin API every time.
+const CACHEABLE_URL_PREFIXES = [
+    'https://api.cbd.int/api/v2013/thesaurus/'
+];
+const CACHEABLE_RESPONSE_TTL_MS = 24*60*60*1000; //24 hours
+const networkResponseCache = new Map();
+
+function isCacheableRequestUrl(requestUrl){
+    return CACHEABLE_URL_PREFIXES.some(prefix => requestUrl.startsWith(prefix));
+}
 // On top of your code
 let restartBrowser = false;
 const MAX_CONCURRENT_RENDERS = 4;
@@ -423,6 +435,13 @@ async function renderHtml (urlRequest){
                     return req.abort();
                 }
 
+                if(req.method() === 'GET' && isCacheableRequestUrl(requestUrl)){
+                    const cached = networkResponseCache.get(requestUrl);
+                    if(cached && cached.expiresAt > Date.now()){
+                        return req.respond(cached);
+                    }
+                }
+
                 if(!abortRequest){
                     reqStatus[requestUrl] = 'request';
                 }
@@ -461,6 +480,25 @@ async function renderHtml (urlRequest){
                         log(`url ${res.url()}, headers: ${JSON.stringify(res.request().headers())}`)
                     }
                 }
+
+                if(res.request().method() === 'GET' && res.status() === 200 && isCacheableRequestUrl(res.url())){
+                    try{
+                        const body = await res.buffer();
+                        const headers = {...res.headers()};
+                        delete headers['content-encoding'];
+                        delete headers['content-length'];
+                        delete headers['transfer-encoding'];
+                        networkResponseCache.set(res.url(), {
+                            status: res.status(),
+                            headers,
+                            body,
+                            expiresAt: Date.now() + CACHEABLE_RESPONSE_TTL_MS
+                        });
+                    } catch(e){
+                        // response body not available (e.g. redirect) — just skip caching it
+                    }
+                }
+
                 delete reqStatus[res.url()]
             })
             const stylesheetContents = {};
