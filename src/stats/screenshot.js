@@ -21,12 +21,19 @@ async function renderUrlPng(url) {
   });
 }
 
-async function renderUrlSectionPngs(url, selectors) {
+// `sections` is a list of { tab, selector }. `tab` is optional — pass it when the
+// section now lives behind a dashboard tab (v-show), since a hidden tab panel has a
+// zero-size bounding box and page.$(selector).screenshot() would fail on it otherwise.
+async function renderUrlSectionPngs(url, sections) {
   return withBrowser(async (page) => {
     await page.goto(url, { waitUntil: 'networkidle0' });
     await page.waitForSelector('.tile-value');
     const pngs = [];
-    for (const selector of selectors) {
+    for (const { tab, selector } of sections) {
+      if (tab) {
+        await page.click(`[data-tab-btn="${tab}"]`);
+        await page.waitForSelector(`[data-tab-panel="${tab}"]`, { visible: true });
+      }
       const el = await page.$(selector);
       pngs.push(await el.screenshot());
     }

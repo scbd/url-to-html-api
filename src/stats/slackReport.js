@@ -79,8 +79,14 @@ async function uploadFileBytes(uploadUrl, buffer, filename) {
   if (!res.ok) throw new Error(`Upload to Slack failed: ${res.status}`);
 }
 
-const SECTION_SELECTORS = ['#snap-section-1', '#snap-section-2', '#snap-section-3'];
-const SECTION_TITLES = ['Overview & by domain', 'By bot', 'Recent errors & soft 404s'];
+// `tab` names the dashboard tab each section now lives behind — 'overview' is the
+// default active tab so it needs no click, the other two do.
+const SNAPSHOT_SECTIONS = [
+  { tab: null, selector: '#snap-section-1' },
+  { tab: 'traffic', selector: '#snap-section-2' },
+  { tab: 'errors', selector: '#snap-section-3' },
+];
+const SECTION_TITLES = ['Overview & by domain', 'Crawlers by volume', 'Grouped failures & soft 404s'];
 
 async function uploadOneFile(token, buffer, filename) {
   const { upload_url: uploadUrl, file_id: fileId } = await slackApi(
@@ -111,7 +117,7 @@ async function sendDailyReport(port) {
   const day = yesterday();
   const summary = summarizeDay(day);
   const caption = formatMessage(summary).text;
-  const pngs = await screenshot.renderUrlSectionPngs(`http://localhost:${port}/?asOf=${day}`, SECTION_SELECTORS);
+  const pngs = await screenshot.renderUrlSectionPngs(`http://localhost:${port}/?asOf=${day}`, SNAPSHOT_SECTIONS);
   await postSnapshotToSlack({ pngs, day, caption });
 }
 
