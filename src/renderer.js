@@ -412,9 +412,8 @@ async function renderHtml (urlRequest){
                 const requestUrl   = req.url();
                 const cURL         = new URL(requestUrl);
                 const isImg        = req.resourceType() === 'image';
-                
-                abortRequest = isImg && ~cURL.pathname.indexOf('/api/v2013/documents/');
-                abortRequest = abortRequest //|| !isCBDDomain(cURL.hostname);
+
+                abortRequest = isImg;
                 abortRequest = abortRequest || abortNetworkUrlRequest(requestUrl);
                 // if(requestUrl.indexOf('bootstrap.min.css')>=0){
                 //     log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
