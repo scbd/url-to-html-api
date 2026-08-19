@@ -9,7 +9,7 @@ const config = require('./config');
 
 function createApp() {
   const app = express();
-  app.use(morgan('common'));
+  app.use(morgan(':remote-addr - [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":req[host]"'));
 
   if (config.NODE_ENV !== 'production') {
     app.use(morgan('dev'));
