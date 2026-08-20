@@ -128,6 +128,15 @@ const SOFT_404_PATTERNS = [
 // 404s anyway.
 const MISSING_DATABASE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4})(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
 
+// Same underlying legacy-URL bug as MISSING_DATABASE_SEGMENT_RE, but here /database/
+// is present and a stray "}" survives right after the type segment — probably a
+// dropped opening "{" from whatever generated the link, e.g.
+// /en/database/GENE}/BCH-GENE-SCBD-294081-1 instead of
+// /en/database/GENE/BCH-GENE-SCBD-294081-1. Observed taking 60-70s to render
+// (Turnitin) before failing anyway, so redirecting instead of rendering also frees
+// up a render slot that would otherwise sit on a URL shape that's already known-bad.
+const STRAY_BRACE_TYPE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?database\/)([a-z]{2,4})\}(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
+
 // Scanners probing for leaked credentials/secrets — SSH keys, cloud config, .env
 // dumps (e.g. /.ssh/id_rsa, /s3/.aws/credentials, /.supabase/.env), plus known
 // scanned filenames outside a dotdir (/rclone.conf), plus path-traversal attempts
@@ -142,14 +151,23 @@ const MISSING_DATABASE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4
 const SENSITIVE_PATH_RE = /\/\.(?!well-known(?:\/|$))[^/]+|\/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$|\/(?:rclone\.conf|wp-config\.php)$/i;
 
 // Some bots (e.g. Bytespider, Baiduspider) append a "/countries/<code>" (or bare
-// "/countries/") suffix onto whatever path a page already had, regardless of what's
-// there — e.g. /about/countries/SY, /resources/icons/register/countries/GM,
-// /en/Pilot/kb/countries/CK. It only looks like a doubled segment when the base path
-// already happened to end in "countries" (/fr/register/countries/countries/CM). This
-// is just a shape suspicion though, not proof — see isKnownSoftNotFoundUrl, which
-// only lets renderUrl skip rendering once the stats service has actually seen this
-// exact URL render as a soft 404 before.
-const COUNTRIES_SUFFIX_RE = /\/countries\/(?:[a-z]{2})?$/i;
+// "/countries", with or without a trailing slash) suffix onto whatever path a page
+// already had, regardless of what's there — e.g. /about/countries/SY,
+// /resources/icons/register/countries/GM, /en/Pilot/kb/countries/CK, or even just
+// bare /en/about/reports-and-reviews/register/kb/tags/bch-announcement/register/countries
+// with no code at all. It only looks like a doubled segment when the base path
+// already happened to end in "countries" (/fr/register/countries/countries/CM).
+// This is just a shape suspicion though, not proof — see isKnownSoftNotFoundUrl,
+// which only lets renderUrl skip rendering once the stats service has actually seen
+// this exact URL render as a soft 404 before.
+const COUNTRIES_SUFFIX_RE = /\/countries(?:\/[a-z]{2})?\/?$/i;
+
+// Same bot behavior as above but not specific to "countries" — e.g.
+// /en/roster/countries/countries/register/kb/kb/ doubles both "countries" and "kb"
+// in the same URL. Catches any segment immediately repeating itself, anywhere in the
+// path, generally. Also gated by isKnownSoftNotFoundUrl — this is shape suspicion,
+// not proof a real route can't ever look like this.
+const REPEATED_PATH_SEGMENT_RE = /\/([^/]+)\/\1(?:\/|$)/i;
 
 function detectSoftNotFound(content){
     return SOFT_404_PATTERNS.some(pattern => pattern.test(content));
@@ -317,7 +335,15 @@ async function renderUrl (req, res){
             return res.redirect(301, redirectUrl);
         }
 
-        if(COUNTRIES_SUFFIX_RE.test(htmlUrl.pathname) && await isKnownSoftNotFoundUrl(clientUrl)){
+        if(STRAY_BRACE_TYPE_SEGMENT_RE.test(htmlUrl.pathname)){
+            const correctedPath = htmlUrl.pathname.replace(STRAY_BRACE_TYPE_SEGMENT_RE, '$1$2$3');
+            const redirectUrl = `${htmlUrl.origin}${correctedPath}${htmlUrl.search}`;
+            log(`Legacy URL with stray "}" after type segment, redirecting ${clientUrl} -> ${redirectUrl}`);
+            reportEvent('legacy_url_redirect', { url: clientUrl, domain: htmlUrl.hostname, redirectTo: redirectUrl, ...requesterInfo(req) });
+            return res.redirect(301, redirectUrl);
+        }
+
+        if((COUNTRIES_SUFFIX_RE.test(htmlUrl.pathname) || REPEATED_PATH_SEGMENT_RE.test(htmlUrl.pathname)) && await isKnownSoftNotFoundUrl(clientUrl)){
             log(`Malformed URL previously confirmed soft 404, skipping render for ${clientUrl}`);
             reportEvent('malformed_url_404', { url: clientUrl, domain: htmlUrl.hostname, ...requesterInfo(req) });
             return res.status(404).send('Not found');
