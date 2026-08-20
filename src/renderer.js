@@ -228,12 +228,37 @@ async function renderUrl (req, res){
 
 const MAX_INFLIGHT_WAIT_MS = 5 * 60 * 1000;
 
+// Fails a still-queued (never started rendering) request fast instead of leaving it
+// to the 5-minute MAX_INFLIGHT_WAIT_MS cap. Returning 503 here lets nginx's
+// proxy_next_upstream retry the request against a different replica instead of the
+// client riding out a backlog on this one — see stack/data/nginx/app.conf.
+const MAX_QUEUE_WAIT_MS = 45 * 1000;
+
 async function renderInflightRequest(url){
 
     const urlRequest = inflightRequests[url]
     if(urlRequest){
 
         if(['finished', 'error'].includes(urlRequest.status)){
+            return urlRequest;
+        }
+
+        if(urlRequest.status === 'request' && Date.now() - urlRequest.requestDate.getTime() > MAX_QUEUE_WAIT_MS){
+            log(`[${INSTANCE_ID}] Queue wait exceeded ${MAX_QUEUE_WAIT_MS}ms for ${url}, replica overloaded — failing fast with 503`);
+            urlRequest.status = 'error';
+            urlRequest.statusCode = 503;
+            urlRequest.error = 'Render queue overloaded on this replica';
+            urlRequest.renderErrorOn = new Date();
+            reportEvent('queue_timeout', {
+                url,
+                domain: safeHostname(url),
+                error: urlRequest.error,
+                queueWaitMs: Date.now() - urlRequest.requestDate.getTime(),
+                ip: urlRequest.ip,
+                userAgent: urlRequest.userAgent,
+                referer: urlRequest.referer,
+                country: urlRequest.country
+            });
             return urlRequest;
         }
 
@@ -752,10 +777,11 @@ function abortNetworkUrlRequest(url){
            /api\.cbd\.int\/socket\.io/.test(url) ||
         //    /socket\.io/.test(url) ||
            /cdn\.slaask\.com/.test(url) ||
-           /www\.gstatic\.com/.test(url) 
+           /www\.gstatic\.com/.test(url) ||
+           /\/error-logs/.test(url) ||
+           /un-geospatial\.github\.io/.test(url)
         //     ||
-        //    /\app\/authorize\.html$/.test(url) || 
-        //    /\/error-logs/.test(url)
+        //    /\app\/authorize\.html$/.test(url)
 
 }
 
