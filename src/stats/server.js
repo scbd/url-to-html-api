@@ -146,6 +146,11 @@ app.get('/api/stats', (req, res) => {
   // .../register/countries/GM), short-circuited before rendering. See
   // COUNTRIES_SUFFIX_RE in renderer.js.
   const recentMalformedUrls = allEvents.filter((e) => e.type === 'malformed_url_404').slice(-200).reverse();
+  // Scanners probing for leaked credentials/secrets, short-circuited before
+  // rendering. The claimed bot name (event.userAgent) is not to be trusted — this is
+  // exactly the traffic that spoofs known-bot user agents. See SENSITIVE_PATH_RE in
+  // renderer.js.
+  const recentSecurityProbes = allEvents.filter((e) => e.type === 'security_probe_404').slice(-200).reverse();
 
   const durationRows = [];
   Object.entries(store.readDurations()).forEach(([date, domains]) => {
@@ -204,6 +209,7 @@ app.get('/api/stats', (req, res) => {
     recentSoftErrors,
     recentRedirects,
     recentMalformedUrls,
+    recentSecurityProbes,
     knownSoft404UrlCount: store.countSoft404Urls(),
   });
 });

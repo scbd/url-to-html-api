@@ -292,6 +292,10 @@
             Malformed URLs
             <span v-if="filteredMalformedUrls.length" class="tab-badge">{{ filteredMalformedUrls.length }}</span>
           </button>
+          <button role="tab" data-tab-btn="security" :aria-pressed="activeTab === 'security'" @click="activeTab = 'security'">
+            Security Probes
+            <span v-if="filteredSecurityProbes.length" class="tab-badge">{{ filteredSecurityProbes.length }}</span>
+          </button>
         </div>
       </div>
     </header>
@@ -857,6 +861,54 @@
       </div>
     </div>
 
+    <!-- ═══ Security Probes ═══ -->
+    <div v-show="activeTab === 'security'" data-tab-panel="security">
+      <h2>Security probes <span style="text-transform:none; letter-spacing:0; color:var(--text-muted); font-weight:400;">— credential/secret scanning</span></h2>
+      <div class="gap-note" style="margin-bottom:16px;">404s issued for requests targeting leaked-credential paths (SSH keys, cloud config, <code>.env</code> dumps, path-traversal attempts), before any render was attempted (see <code>SENSITIVE_PATH_RE</code> in <code>renderer.js</code>). The "Client" label is the requester's claimed User-Agent, which is trivially spoofable — this is exactly the traffic that fakes known-bot names (ChatGPT-User, Google-Extended, FacebookBot, etc.) to blend in. The source IP below is the more reliable signal.</div>
+
+      <div class="kpis" style="margin-bottom:20px;">
+        <div class="card tile pending">
+          <div class="tile-label">Total security probes</div>
+          <div class="tile-value">{{ filteredSecurityProbes.length }}</div>
+          <div class="tile-sub">current sample (last ~200 events) in range</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">By source IP</h2>
+          <div v-if="!securityProbeIpRows.length" class="empty">No security probes in this range.</div>
+          <div v-else style="display:flex; flex-direction:column; gap:10px;">
+            <div v-for="r in securityProbeIpRows" :key="r.ip">
+              <div style="display:flex; justify-content:space-between; gap:12px; font-size:12px;">
+                <span style="color:var(--text-secondary);">{{ r.ip }}</span>
+                <span style="color:var(--text-muted); flex:none;">{{ r.n.toLocaleString() }} ({{ r.pct }}%)</span>
+              </div>
+              <div class="share-track" style="height:6px; margin-top:4px;"><div class="share-fill" :style="{ width: r.pct + '%' }"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">Recent security probes</h2>
+          <div class="table-scroll" style="max-height:320px;">
+            <table>
+              <thead><tr><th>Time</th><th>Requested URL</th><th>IP</th><th>Claimed client</th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredSecurityProbes.length"><td colspan="4" class="empty">No security probes in this range.</td></tr>
+                <tr v-for="(e, i) in filteredSecurityProbes.slice(0, 50)" :key="i">
+                  <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+                  <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+                  <td>{{ e.ip || '' }}</td>
+                  <td>{{ friendlyAgent(e.userAgent) || e.userAgent || '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     </main>
 
     <div id="tooltip" role="tooltip" :class="{ show: tooltip.show }" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
@@ -1033,6 +1085,7 @@ createApp({
     const rawRedirects = ref([]);
     const rawMalformedUrls = ref([]);
     const knownSoft404UrlCount = ref(0);
+    const rawSecurityProbes = ref([]);
     const rawLive = ref([]);
     const rawDuplicates = ref([]);
     const rawRoutePatterns = ref([]);
@@ -1229,6 +1282,32 @@ createApp({
       return Object.entries(counts)
         .sort((a, b) => b[1] - a[1])
         .map(([bot, n]) => ({ bot, n, pct: total ? ((n / total) * 100).toFixed(1) : '0.0' }));
+    });
+
+    // Same reasoning as filteredRedirects/filteredMalformedUrls — scope on date
+    // range + domain only, not the success/error/restart/soft_error taxonomy.
+    const filteredSecurityProbes = computed(() => {
+      const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
+      return rawSecurityProbes.value.filter((e) => (
+        e.timestamp.slice(0, 10) >= cutoffVal && e.timestamp.slice(0, 10) <= nowDay
+        && (!domainFilter.value || e.domain === domainFilter.value)
+      ));
+    });
+
+    // Grouped by source IP rather than claimed bot name — the User-Agent here is
+    // untrustworthy by construction (this traffic exists specifically to spoof
+    // known-bot names), but the IP is what an actual block decision would use.
+    const securityProbeIpRows = computed(() => {
+      const counts = {};
+      filteredSecurityProbes.value.forEach((e) => {
+        const label = e.ip || 'unknown';
+        counts[label] = (counts[label] || 0) + 1;
+      });
+      const total = filteredSecurityProbes.value.length;
+      return Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([ip, n]) => ({ ip, n, pct: total ? ((n / total) * 100).toFixed(1) : '0.0' }));
     });
 
     // Live activity has no date dimension — it's whatever's happening right now across
@@ -1674,6 +1753,7 @@ createApp({
       rawRedirects.value = data.recentRedirects || [];
       rawMalformedUrls.value = data.recentMalformedUrls || [];
       knownSoft404UrlCount.value = data.knownSoft404UrlCount || 0;
+      rawSecurityProbes.value = data.recentSecurityProbes || [];
       rawDuplicates.value = data.duplicates || [];
       rawRoutePatterns.value = data.routePatterns || [];
       rawCacheStats.value = data.cacheStats || [];
@@ -1704,7 +1784,7 @@ createApp({
       STATUS, STATUS_KEYS, RANGE_OPTIONS, MAX_CONCURRENT_RENDERS,
       rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable, activeTab,
       retentionDays, domains, kpis, insights, dailyTableRows, dailyChart, domainRows, domainBarVM,
-      botRows, filteredSoftErrors, filteredRedirects, redirectBotRows, filteredMalformedUrls, malformedUrlBotRows, knownSoft404UrlCount, errorGroups, distinctSignatureCount, mtbfLabel,
+      botRows, filteredSoftErrors, filteredRedirects, redirectBotRows, filteredMalformedUrls, malformedUrlBotRows, knownSoft404UrlCount, filteredSecurityProbes, securityProbeIpRows, errorGroups, distinctSignatureCount, mtbfLabel,
       probeHits, probeIpCount, softCauses, trafficKpis, renderBudget, routePatternRows, failuresInRange, aggregates,
       cacheStatsSummary, cacheHelp,
       liveInstances, liveEntries, totalRendering, totalQueued, instanceCards, oldestQueuedMs, duplicateQueuedCount, estimatedDrainSeconds,
