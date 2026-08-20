@@ -137,11 +137,15 @@ app.get('/api/stats', (req, res) => {
   if (req.query.asOf) {
     allEvents = allEvents.filter((e) => e.timestamp.slice(0, 10) === req.query.asOf);
   }
-  const recentErrors = allEvents.filter((e) => e.type !== 'soft_404' && e.type !== 'legacy_url_redirect').slice(-200).reverse();
+  const recentErrors = allEvents.filter((e) => e.type !== 'soft_404' && e.type !== 'legacy_url_redirect' && e.type !== 'malformed_url_404' && e.type !== 'security_probe_404').slice(-200).reverse();
   const recentSoftErrors = allEvents.filter((e) => e.type === 'soft_404').slice(-200).reverse();
   // Temporary rollout-monitoring list for the missing-/database/-segment redirect —
   // remove once that's confirmed clean. See MISSING_DATABASE_SEGMENT_RE in renderer.js.
   const recentRedirects = allEvents.filter((e) => e.type === 'legacy_url_redirect').slice(-200).reverse();
+  // Bot-mangled URLs with a bot-appended /countries/<code> suffix (e.g.
+  // .../register/countries/GM), short-circuited before rendering. See
+  // COUNTRIES_SUFFIX_RE in renderer.js.
+  const recentMalformedUrls = allEvents.filter((e) => e.type === 'malformed_url_404').slice(-200).reverse();
 
   const durationRows = [];
   Object.entries(store.readDurations()).forEach(([date, domains]) => {

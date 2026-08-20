@@ -128,6 +128,29 @@ const SOFT_404_PATTERNS = [
 // 404s anyway.
 const MISSING_DATABASE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4})(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
 
+// Scanners probing for leaked credentials/secrets — SSH keys, cloud config, .env
+// dumps (e.g. /.ssh/id_rsa, /s3/.aws/credentials, /.supabase/.env), plus known
+// scanned filenames outside a dotdir (/rclone.conf), plus path-traversal attempts
+// that survive URL normalization by disguising ".." (e.g. "/..;/.env" — the ";"
+// stops it matching the WHATWG URL spec's exact ".." dot-segment removal, unlike a
+// literal ".." which never reaches here). None of bch/absch/chm/ort.cbd.int's SPA
+// routes use dot-prefixed path segments, so this is unambiguous — no legitimate
+// route can match — except /.well-known/, a real standard path (ACME challenges,
+// security.txt), which is excluded. The requesting "bot" name is not to be trusted
+// here: User-Agent is trivially spoofable, and known-bot names are a common way to
+// blend in with allowlisted crawlers while scanning for secrets.
+const SENSITIVE_PATH_RE = /\/\.(?!well-known(?:\/|$))[^/]+|\/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$|\/(?:rclone\.conf|wp-config\.php)$/i;
+
+// Some bots (e.g. Bytespider, Baiduspider) append a "/countries/<code>" (or bare
+// "/countries/") suffix onto whatever path a page already had, regardless of what's
+// there — e.g. /about/countries/SY, /resources/icons/register/countries/GM,
+// /en/Pilot/kb/countries/CK. It only looks like a doubled segment when the base path
+// already happened to end in "countries" (/fr/register/countries/countries/CM). This
+// is just a shape suspicion though, not proof — see isKnownSoftNotFoundUrl, which
+// only lets renderUrl skip rendering once the stats service has actually seen this
+// exact URL render as a soft 404 before.
+const COUNTRIES_SUFFIX_RE = /\/countries\/(?:[a-z]{2})?$/i;
+
 function detectSoftNotFound(content){
     return SOFT_404_PATTERNS.some(pattern => pattern.test(content));
 }
@@ -147,6 +170,24 @@ function reportEvent(type, payload){
     }).catch((e)=>{
         log(`Failed to report stats event to ${STATS_URL}`, e ? e.toString() : 'unknown');
     });
+}
+
+// Confirms a URL that only *looks* bogus (matches COUNTRIES_SUFFIX_RE) has actually
+// rendered as a soft 404 before reporting for it — defaults to false (render as
+// normal) on any lookup failure, so a stats-service hiccup never causes a false 404.
+async function isKnownSoftNotFoundUrl(clientUrl){
+    try{
+        const res = await fetch(`${STATS_URL}/api/known-soft-404?url=${encodeURIComponent(clientUrl)}`, {
+            signal: AbortSignal.timeout(2000)
+        });
+        if(!res.ok) return false;
+        const data = await res.json();
+        return Boolean(data.known);
+    }
+    catch(e){
+        log(`Failed to check known soft-404 status for ${clientUrl}`, e ? e.toString() : 'unknown');
+        return false;
+    }
 }
 
 function reportLiveStatus(payload){
@@ -262,12 +303,24 @@ async function renderUrl (req, res){
     let requestEntry;
     try{
 
+        if(SENSITIVE_PATH_RE.test(htmlUrl.pathname)){
+            log(`Blocked probe for sensitive path, skipping render for ${clientUrl}`);
+            reportEvent('security_probe_404', { url: clientUrl, domain: htmlUrl.hostname, ...requesterInfo(req) });
+            return res.status(404).send('Not found');
+        }
+
         if(MISSING_DATABASE_SEGMENT_RE.test(htmlUrl.pathname)){
             const correctedPath = htmlUrl.pathname.replace(MISSING_DATABASE_SEGMENT_RE, '$1database/$2$3');
             const redirectUrl = `${htmlUrl.origin}${correctedPath}${htmlUrl.search}`;
             log(`Legacy URL missing /database/ segment, redirecting ${clientUrl} -> ${redirectUrl}`);
             reportEvent('legacy_url_redirect', { url: clientUrl, domain: htmlUrl.hostname, redirectTo: redirectUrl, ...requesterInfo(req) });
             return res.redirect(301, redirectUrl);
+        }
+
+        if(COUNTRIES_SUFFIX_RE.test(htmlUrl.pathname) && await isKnownSoftNotFoundUrl(clientUrl)){
+            log(`Malformed URL previously confirmed soft 404, skipping render for ${clientUrl}`);
+            reportEvent('malformed_url_404', { url: clientUrl, domain: htmlUrl.hostname, ...requesterInfo(req) });
+            return res.status(404).send('Not found');
         }
 
         cleanUpInflightRequests();
