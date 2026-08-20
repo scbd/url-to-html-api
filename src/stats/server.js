@@ -18,7 +18,13 @@ app.use(express.json({ limit: '100kb' }));
 app.post('/events', (req, res) => {
   const event = req.body || {};
   const client = classifyUserAgent(event.userAgent) || 'human';
-  store.incrementCount(event.type, event.domain, client);
+  // Kept out of incrementCount — statusOf() on the dashboard buckets any unrecognized
+  // type as "error", and a redirect is the opposite of a failure (it's a render we
+  // avoided). Still appended to the raw event log below so the dashboard can show a
+  // recent list for rollout monitoring.
+  if (event.type !== 'legacy_url_redirect') {
+    store.incrementCount(event.type, event.domain, client);
+  }
   if (event.type !== 'render_success') {
     store.appendEvent(event);
   }

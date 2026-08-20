@@ -120,6 +120,14 @@ const SOFT_404_PATTERNS = [
     /class="text-medium-emphasis float-start">The page you are looking for was not found\.<\/p>/ // ort.cbd.int (separate React app)
 ];
 
+// Legacy record URLs missing the /database/ segment (e.g. /en/RA/BCH-RA-CU-115450
+// instead of /en/database/RA/BCH-RA-CU-115450) — bots keep re-crawling these from a
+// pre-migration index. \2 backreferences the type segment against the ID's own type
+// component, so a mismatch (e.g. /ORG/BCH-NR-...) doesn't match. Redirecting instead
+// of rendering means we never spin up a Puppeteer page for a URL shape that always
+// 404s anyway.
+const MISSING_DATABASE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4})(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
+
 function detectSoftNotFound(content){
     return SOFT_404_PATTERNS.some(pattern => pattern.test(content));
 }
@@ -249,6 +257,14 @@ async function renderUrl (req, res){
     const lastCall = +new Date();
     let requestEntry;
     try{
+
+        if(MISSING_DATABASE_SEGMENT_RE.test(htmlUrl.pathname)){
+            const correctedPath = htmlUrl.pathname.replace(MISSING_DATABASE_SEGMENT_RE, '$1database/$2$3');
+            const redirectUrl = `${htmlUrl.origin}${correctedPath}${htmlUrl.search}`;
+            log(`Legacy URL missing /database/ segment, redirecting ${clientUrl} -> ${redirectUrl}`);
+            reportEvent('legacy_url_redirect', { url: clientUrl, domain: htmlUrl.hostname, redirectTo: redirectUrl, ...requesterInfo(req) });
+            return res.redirect(301, redirectUrl);
+        }
 
         cleanUpInflightRequests();
 
