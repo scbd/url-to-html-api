@@ -1,342 +1,29 @@
-﻿
-const url       = require('url');
-const os        = require('os');
-const fs        = require('fs');
-const path      = require('path');
-// const chrome    = require("@sparticuz/chromium")
-const puppeteer = require("puppeteer")
-const { forEach, findKey }  = require('lodash');
-const querySting = require('querystring');
+const url        = require('url');
+const querySting  = require('querystring');
+const { forEach, findKey } = require('lodash');
 const config = require('./config');
 
-// Swarm replicas share one log stream; this tags every log line from this process so
-// activity from different replicas isn't confused with each other when reading logs.
-const INSTANCE_ID = os.hostname();
+const INSTANCE_ID = require('./instanceId');
+const sleep = require('./sleep');
+const { log, logError } = require('./debugLog');
+const { removeScriptTags, updateBaseUrl, formatBytes } = require('./htmlContent');
+const { isCBDDomain, abortNetworkUrlRequest } = require('./networkFilters');
+const {
+    SENSITIVE_PATH_RE,
+    MISSING_DATABASE_SEGMENT_RE,
+    STRAY_BRACE_TYPE_SEGMENT_RE,
+    COUNTRIES_SUFFIX_RE,
+    REPEATED_PATH_SEGMENT_RE,
+    detectSoftNotFound,
+} = require('./legacyUrlPatterns');
+const { networkResponseCache, matchCacheableEntry, saveNetworkResponseCache } = require('./networkResponseCache');
+const { reportEvent, isKnownSoftNotFoundUrl } = require('./statsReporter');
+const { requesterInfo, safeHostname } = require('./requestContext');
+const chromeBrowser = require('./chromeBrowser');
+const { inflightRequests, renderInflightRequest, cleanUpInflightRequests, getInflightCount } = require('./inflightRequests');
+const { captureDiagnostics, logInflightSnapshot } = require('./diagnostics');
 
-// Persists Chrome's own HTTP disk cache across restartChrome() calls within this
-// container's lifetime (still wiped on a full container recreate/redeploy, since
-// nothing mounts this path to a volume). Pages all share the default browser context
-// (see browser.newPage() below, no incognito context), so this cache is already doing
-// real work for repeat static assets — no reason to throw it away every time Chrome relaunches.
-const CHROME_USER_DATA_DIR = process.env.CHROME_USER_DATA_DIR || path.join(__dirname, '../data/chrome-profile');
-fs.mkdirSync(CHROME_USER_DATA_DIR, { recursive: true });
-
-let browser;
 const cacheControl = 7*24*60*60; //7days
-
-// Slow-changing API calls made by rendered pages (e.g. thesaurus/countries lookups)
-// and CDN-hosted libs are cached in-process, and persisted to disk (one file per
-// `name`, see cacheStorageFilePath below), so repeated calls don't hit the origin/CDN
-// on every render. Thesaurus/countries reference data hardly ever changes, so 7 days
-// is safe; jsdelivr gets longer still since its URLs are npm-version-pinned and
-// therefore effectively immutable at a given URL.
-// `name` is also the dashboard-facing cache bucket (Caching tab) and the disk-file
-// key — adding an entry here automatically gets its own persisted file and its own
-// row on the dashboard, no other code changes needed.
-const CACHEABLE_ENTRIES = [
-    { name: 'thesaurus', prefix: 'https://api.cbd.int/api/v2013/thesaurus/', ttlMs: 7 * 24 * 60 * 60 * 1000 },
-    // No trailing slash: the site's actual call is `$http.get("/api/v2013/countries",
-    // {params:{s:sortBy}})` (commonjs.getCountries, used by the shared header
-    // directive on nearly every page) — the real request URL is
-    // ".../countries?s%5B...%5D=1" with no "/" before the query string, so a
-    // trailing-slash prefix here never matched it and this traffic was silently
-    // never cached (and never counted on the dashboard).
-    { name: 'countries', prefix: 'https://api.cbd.int/api/v2013/countries', ttlMs: 7 * 24 * 60 * 60 * 1000 },
-    { name: 'jsdelivr', prefix: 'https://cdn.jsdelivr.net/', ttlMs: 30 * 24 * 60 * 60 * 1000 },
-];
-const networkResponseCache = new Map();
-
-function matchCacheableEntry(requestUrl){
-    return CACHEABLE_ENTRIES.find((e) => requestUrl.startsWith(e.prefix)) || null;
-}
-
-// One file per cache name rather than one shared file — a jsdelivr entry is large and
-// rarely changes (30-day TTL), while thesaurus/countries entries are many, small, and
-// churn daily; sharing a file would mean every thesaurus write also rewrites
-// jsdelivr's bodies for no reason. Bodies persist as base64 since they're Buffers
-// (could be binary, e.g. a jsdelivr asset) and JSON has no native byte-string type.
-const NETWORK_RESPONSE_CACHE_DIR = process.env.NETWORK_RESPONSE_CACHE_DIR || path.join(__dirname, '../data');
-
-function cacheStorageFilePath(name){
-    return path.join(NETWORK_RESPONSE_CACHE_DIR, `network-response-cache-${name}.json`);
-}
-
-function loadNetworkResponseCache(){
-    const now = Date.now();
-    // De-duped in case a future CACHEABLE_ENTRIES addition ever reuses an existing name.
-    const names = [...new Set(CACHEABLE_ENTRIES.map((e) => e.name))];
-    names.forEach((name) => {
-        const file = cacheStorageFilePath(name);
-        try{
-            if(!fs.existsSync(file)) return;
-            const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-            Object.entries(raw).forEach(([entryUrl, entry]) => {
-                if(entry.expiresAt > now){
-                    networkResponseCache.set(entryUrl, { ...entry, body: Buffer.from(entry.body, 'base64') });
-                }
-            });
-        } catch(e){
-            logError(`Failed to load persisted network response cache for "${name}"`, e);
-        }
-    });
-    log(`Loaded ${networkResponseCache.size} cached network responses from disk`);
-}
-
-// Debounced, and scoped to only the cache name(s) that actually changed since the
-// last flush — a burst of thesaurus lookups shouldn't also rewrite jsdelivr's file.
-const dirtyCacheNames = new Set();
-let saveNetworkResponseCacheTimer = null;
-function saveNetworkResponseCache(name){
-    dirtyCacheNames.add(name);
-    if(saveNetworkResponseCacheTimer) return;
-    saveNetworkResponseCacheTimer = setTimeout(() => {
-        saveNetworkResponseCacheTimer = null;
-        const namesToFlush = [...dirtyCacheNames];
-        dirtyCacheNames.clear();
-
-        namesToFlush.forEach((flushName) => {
-            const serializable = {};
-            networkResponseCache.forEach((entry, entryUrl) => {
-                const matched = matchCacheableEntry(entryUrl);
-                if(matched && matched.name === flushName){
-                    serializable[entryUrl] = { ...entry, body: entry.body.toString('base64') };
-                }
-            });
-            fs.writeFile(cacheStorageFilePath(flushName), JSON.stringify(serializable), (err) => {
-                if(err) logError(`Failed to persist network response cache for "${flushName}"`, err);
-            });
-        });
-    }, 2000);
-}
-
-loadNetworkResponseCache();
-// On top of your code
-let restartBrowser = false;
-const MAX_CONCURRENT_RENDERS = 4;
-// Tracks renders dispatched but not yet finished, incremented synchronously the instant
-// renderHtml is called. browser.pages().length lags behind (page creation is async), so
-// using it as the concurrency gate let processInflightRequest's loop dispatch far more
-// than MAX_CONCURRENT_RENDERS renders before the page count caught up.
-let activeRenders = 0;
-
-// Soft-404s: SPAs that return HTTP 200 with a shell page but render a "not found"
-// state client-side for routes with no matching data. Add signatures here as they're found.
-const SOFT_404_PATTERNS = [
-    /<span class="color-red bold" style="font-size:50px;">Page not found\.<\/span>/, // bch/absch/chm.cbd.int (shared AngularJS platform)
-    /class="text-medium-emphasis float-start">The page you are looking for was not found\.<\/p>/ // ort.cbd.int (separate React app)
-];
-
-// Legacy record URLs missing the /database/{TYPE}/ segment, in either of two shapes.
-// Bots keep re-crawling both from pre-migration indexes; redirecting instead of
-// rendering means we never spin up a Puppeteer page for a URL shape that always
-// fails anyway. Kept as separate patterns (rather than one shared regex) since the
-// type comes from a different place in each, needing its own correction logic.
-const MISSING_DATABASE_SEGMENT_RE = [
-    // Type-directory still present, /database/ isn't (e.g. /en/RA/BCH-RA-CU-115450
-    // instead of /en/database/RA/BCH-RA-CU-115450). \2 backreferences the directory
-    // against the ID's own type component, so a mismatch (e.g. /ORG/BCH-NR-...)
-    // doesn't match.
-    {
-        re: /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4})(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i,
-        correct: (lang, dirType, idSuffix) => `${lang}database/${dirType}${idSuffix}`
-    },
-    // Type-directory missing too — the ID sits bare off the lang prefix/root (e.g.
-    // /en/ABSCH-A19A20-SCBD-238048-3 instead of /en/database/A19A20/ABSCH-A19A20-
-    // SCBD-238048-3). Verified live via an actual render: the bare/no-type-dir URL
-    // either soft-404s or hangs for 30s+ before failing (worse — it ties up a render
-    // slot), while inserting the type directory renders the real page. The type is
-    // read straight from the ID itself (no directory to backreference), so unlike
-    // the pattern above it isn't restricted to plain letters — ABS-CH's own type
-    // codes are alphanumeric (e.g. "A19A20").
-    {
-        re: /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{3,6})-([a-z0-9]{2,8})-([a-z]{2,4})-(\d+(?:-\d{1,3})?)$/i,
-        correct: (lang, site, idType, org, num) => `${lang}database/${idType}/${site}-${idType}-${org}-${num}`
-    }
-];
-
-// Same underlying legacy-URL bug as MISSING_DATABASE_SEGMENT_RE, but here /database/
-// is present and a stray "}" survives right after the type segment — probably a
-// dropped opening "{" from whatever generated the link, e.g.
-// /en/database/GENE}/BCH-GENE-SCBD-294081-1 instead of
-// /en/database/GENE/BCH-GENE-SCBD-294081-1. Observed taking 60-70s to render
-// (Turnitin) before failing anyway, so redirecting instead of rendering also frees
-// up a render slot that would otherwise sit on a URL shape that's already known-bad.
-const STRAY_BRACE_TYPE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?database\/)([a-z]{2,4})\}(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
-
-// Scanners probing for leaked credentials/secrets — SSH keys, cloud config, .env
-// dumps (e.g. /.ssh/id_rsa, /s3/.aws/credentials, /.supabase/.env), plus known
-// scanned filenames outside a dotdir (/rclone.conf), plus path-traversal attempts
-// that survive URL normalization by disguising ".." (e.g. "/..;/.env" — the ";"
-// stops it matching the WHATWG URL spec's exact ".." dot-segment removal, unlike a
-// literal ".." which never reaches here). None of bch/absch/chm/ort.cbd.int's SPA
-// routes use dot-prefixed path segments, so this is unambiguous — no legitimate
-// route can match — except /.well-known/, a real standard path (ACME challenges,
-// security.txt), which is excluded. The requesting "bot" name is not to be trusted
-// here: User-Agent is trivially spoofable, and known-bot names are a common way to
-// blend in with allowlisted crawlers while scanning for secrets.
-const SENSITIVE_PATH_RE = /\/\.(?!well-known(?:\/|$))[^/]+|\/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$|\/(?:rclone\.conf|wp-config\.php)$/i;
-
-// Some bots (e.g. Bytespider, Baiduspider) append a "/countries/<code>" (or bare
-// "/countries", with or without a trailing slash) suffix onto whatever path a page
-// already had, regardless of what's there — e.g. /about/countries/SY,
-// /resources/icons/register/countries/GM, /en/Pilot/kb/countries/CK, or even just
-// bare /en/about/reports-and-reviews/register/kb/tags/bch-announcement/register/countries
-// with no code at all. It only looks like a doubled segment when the base path
-// already happened to end in "countries" (/fr/register/countries/countries/CM).
-// This is just a shape suspicion though, not proof — see isKnownSoftNotFoundUrl,
-// which only lets renderUrl skip rendering once the stats service has actually seen
-// this exact URL render as a soft 404 before.
-const COUNTRIES_SUFFIX_RE = /\/countries(?:\/[a-z]{2})?\/?$/i;
-
-// Same bot behavior as above but not specific to "countries" — e.g.
-// /en/roster/countries/countries/register/kb/kb/ doubles both "countries" and "kb"
-// in the same URL. Catches any segment immediately repeating itself, anywhere in the
-// path, generally. Also gated by isKnownSoftNotFoundUrl — this is shape suspicion,
-// not proof a real route can't ever look like this.
-const REPEATED_PATH_SEGMENT_RE = /\/([^/]+)\/\1(?:\/|$)/i;
-
-function detectSoftNotFound(content){
-    return SOFT_404_PATTERNS.some(pattern => pattern.test(content));
-}
-
-const inflightRequests = {};
-
-const sleep = (timeout)=>new Promise((resolve) => setTimeout(resolve, timeout));
-
-const STATS_URL = process.env.STATS_URL || 'http://stats:7200';
-
-function reportEvent(type, payload){
-    fetch(`${STATS_URL}/events`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, ...payload }),
-        signal: AbortSignal.timeout(2000)
-    }).catch((e)=>{
-        log(`Failed to report stats event to ${STATS_URL}`, e ? e.toString() : 'unknown');
-    });
-}
-
-// Confirms a URL that only *looks* bogus (matches COUNTRIES_SUFFIX_RE) has actually
-// rendered as a soft 404 before reporting for it — defaults to false (render as
-// normal) on any lookup failure, so a stats-service hiccup never causes a false 404.
-async function isKnownSoftNotFoundUrl(clientUrl){
-    try{
-        const res = await fetch(`${STATS_URL}/api/known-soft-404?url=${encodeURIComponent(clientUrl)}`, {
-            signal: AbortSignal.timeout(2000)
-        });
-        if(!res.ok) return false;
-        const data = await res.json();
-        return Boolean(data.known);
-    }
-    catch(e){
-        log(`Failed to check known soft-404 status for ${clientUrl}`, e ? e.toString() : 'unknown');
-        return false;
-    }
-}
-
-function reportLiveStatus(payload){
-    fetch(`${STATS_URL}/live-status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(2000)
-    }).catch((e)=>{
-        log(`Failed to report live status to ${STATS_URL}`, e ? e.toString() : 'unknown');
-    });
-}
-
-function clientIp(req){
-    const xff = req.headers['x-forwarded-for'];
-    if(xff){
-        // chain is [client-supplied..., realViewerIP (added by CloudFront), edgeIP (added by our nginx)]
-        const ips = xff.split(',').map(ip => ip.trim()).filter(Boolean);
-        if(ips.length >= 2) return ips[ips.length - 2];
-        if(ips.length === 1) return ips[0];
-    }
-    return req.headers['x-real-ip'] || req.socket?.remoteAddress || 'unknown';
-}
-
-function requesterInfo(req){
-    return {
-        ip: clientIp(req),
-        userAgent: req.headers['x-origin-user-agent'] || req.headers['user-agent'] || 'unknown',
-        referer: req.headers['referer'] || req.headers['referrer'] || '',
-        country: req.headers['cloudfront-viewer-country'] || '',
-        // nginx's $upstream_cache_status, forwarded per stack/data/nginx/app.conf. Only
-        // ever MISS/EXPIRED/STALE/BYPASS/REVALIDATED/UPDATING — a true cache HIT is served
-        // by nginx directly and never reaches this service.
-        edgeCacheStatus: req.headers['x-proxy-cache'] || ''
-    };
-}
-
-function safeHostname(clientUrl){
-    try{
-        return new url.URL(clientUrl).hostname;
-    }
-    catch(e){
-        return 'unknown';
-    }
-}
-
-async function initializeChrome(){
-    if(!browser){
-        let chromeFlags = [
-			'--no-sandbox', '--disable-gpu', 
-            '--hide-scrollbars', '--headless', 
-            '--disable-setuid-sandbox', '--disable-dev-shm-usage'
-		];
-        let headless = true;
-
-        if(process.env.showBrowser == 'true'){
-            chromeFlags = chromeFlags.filter(e=>e!= '--headless')
-            headless = false
-        }
-
-        // log(`executablePath`, puppeteer.executablePath())
-
-        log('initializing chrome');
-
-        const chromeOptions = {
-            args: chromeFlags,
-            headless,
-            handleSIGTERM: false,
-            handleSIGINT: false,
-            userDataDir: CHROME_USER_DATA_DIR,
-            // ignoreHTTPSErrors: true,
-            // sloMo: config.DEBUG_MODE ? 250 : undefined,
-        }
-
-        browser = await puppeteer.launch(chromeOptions)
-
-        // Fires on a real crash/OOM-kill, not on our own deliberate restartChrome() close
-        // (that already sets browser = undefined before this listener would matter).
-        // Reuses the existing browser_restart category so the dashboard needs no changes;
-        // the reason text is what distinguishes a crash from a normal render-triggered restart.
-        browser.on('disconnected', () => {
-            logError(`[${INSTANCE_ID}] Browser disconnected unexpectedly`);
-            reportEvent('browser_restart', { reason: 'Browser process disconnected unexpectedly (crash or external kill)' });
-            restartBrowser = true;
-        });
-
-        let numberOfOpenPages = (await browser.pages()).length
-        if(numberOfOpenPages == 0){
-            //fake page so that if the last tap is closed the instance stays in memory
-            const fakePage = await browser.newPage();
-        }
-
-        log('Chrome new instance initialized')
-    }
-    else{
-        log('Chrome instance is in memory, reusing...')
-    }
-
-    return browser;
-
-}
-
-// setInterval(() => {
-//     restartBrowser = true;
-// }, 15000);
 
 async function renderUrl (req, res){
     const clientUrl = req.query.url.replace(/^\//, '');
@@ -433,95 +120,18 @@ async function renderUrl (req, res){
     }
 }
 
-const MAX_INFLIGHT_WAIT_MS = 5 * 60 * 1000;
-
-// Fails a still-queued (never started rendering) request fast instead of leaving it
-// to the 5-minute MAX_INFLIGHT_WAIT_MS cap. Returning 503 here lets nginx's
-// proxy_next_upstream retry the request against a different replica instead of the
-// client riding out a backlog on this one — see stack/data/nginx/app.conf.
-const MAX_QUEUE_WAIT_MS = 45 * 1000;
-
-async function renderInflightRequest(url){
-
-    const urlRequest = inflightRequests[url]
-    if(urlRequest){
-
-        if(['finished', 'error'].includes(urlRequest.status)){
-            return urlRequest;
-        }
-
-        if(urlRequest.status === 'request' && Date.now() - urlRequest.requestDate.getTime() > MAX_QUEUE_WAIT_MS){
-            log(`[${INSTANCE_ID}] Queue wait exceeded ${MAX_QUEUE_WAIT_MS}ms for ${url}, replica overloaded — failing fast with 503`);
-            urlRequest.status = 'error';
-            urlRequest.statusCode = 503;
-            urlRequest.error = 'Render queue overloaded on this replica';
-            urlRequest.renderErrorOn = new Date();
-            reportEvent('queue_timeout', {
-                url,
-                domain: safeHostname(url),
-                error: urlRequest.error,
-                queueWaitMs: Date.now() - urlRequest.requestDate.getTime(),
-                ip: urlRequest.ip,
-                userAgent: urlRequest.userAgent,
-                referer: urlRequest.referer,
-                country: urlRequest.country
-            });
-            return urlRequest;
-        }
-
-        // Wall-clock based: numberOfChecks is shared across every caller joined on this
-        // same URL, so when multiple callers poll concurrently it climbs faster than
-        // real time, making a poll-count threshold fire early and unpredictably.
-        if(Date.now() - urlRequest.requestDate.getTime() > MAX_INFLIGHT_WAIT_MS){
-            throw new Error('Too much wait time for request to process ', urlRequest)
-        }
-
-        urlRequest.numberOfChecks += 1;
-        await sleep(1000);
-        if(inflightRequests[url])
-            return renderInflightRequest(url);
-    }
-    else{
-        throw new Error('Request not found inflight', url)
-    }
-}
-
-async function restartChrome(){
-    log('Request received to restart browser, waiting for all tabs to close')
-    await waitForAllTabsToFinish(0);
-    await sleep(1000);
-
-    const browserToClose = browser;
-    const childProcess = browserToClose.process();
-
-    await Promise.race([browserToClose.close(), sleep(5000)])
-        .catch(e => logError('Error closing browser gracefully', e));
-
-    if(childProcess && childProcess.exitCode === null && !childProcess.killed){
-        log('Browser did not close gracefully, force killing process');
-        childProcess.kill('SIGKILL');
-    }
-
-    browser = undefined;
-    log('Browser restarted!!!!!!')
-
-    await initializeChrome();
-
-    restartBrowser = false;
-}
-
 async function processInflightRequest(){
     try{
-        await initializeChrome();
+        await chromeBrowser.initializeChrome();
 
         while(true){
             if(Object.keys(inflightRequests)?.length> 0 ){
 
                 log(`process inflight running, ${Object.keys(inflightRequests)?.length}`);
 
-                if(restartBrowser){
+                if(chromeBrowser.shouldRestart()){
                     try{
-                        await restartChrome()
+                        await chromeBrowser.restartChrome()
                     }
                     catch(e){
                         logError('Error restarting chrome', e);
@@ -529,7 +139,7 @@ async function processInflightRequest(){
                     }
                 }
 
-                const canProcessRequest = await hasFreeTabs();
+                const canProcessRequest = await chromeBrowser.hasFreeTabs(Object.keys(inflightRequests)?.length);
                 if(canProcessRequest){
                     const urlRequest = Object.values(inflightRequests)?.find(e=>e?.status == 'request');
 
@@ -538,7 +148,7 @@ async function processInflightRequest(){
                     }
                 }
                 else{
-                    const tabCount = (await browser.pages()).length
+                    const tabCount = (await chromeBrowser.getBrowser().pages()).length
                     log(`Current browser has ${tabCount}`)
                 }
 
@@ -559,52 +169,6 @@ async function processInflightRequest(){
 
 }
 
-async function hasFreeTabs(){
-    if(!browser)
-        await initializeChrome();
-
-    let waitedSeconds = 0
-    if(activeRenders >= MAX_CONCURRENT_RENDERS){
-        log(`number of concurrent renders have reached limit, ${activeRenders}.
-            no of inflight request ${Object.keys(inflightRequests)?.length}.
-            waitedSeconds : ${waitedSeconds}`);
-
-        while(activeRenders >= MAX_CONCURRENT_RENDERS){
-            await sleep(1000);
-            waitedSeconds += 1000;
-        }
-    }
-
-    return true;
-}
-
-
-async function waitForAllTabsToFinish(iteration = 0){
-    if(!browser)
-        return;
-
-    let waitedSeconds     = 0;
-    let numberOfOpenPages = (await browser.pages());
-    for(index in numberOfOpenPages){
-        const page = numberOfOpenPages[index];
-
-        if(page.url() == 'about:blank'){
-            await page.close();
-        }
-    }
-    if(numberOfOpenPages?.length > 0){
-        log(`number of inflight open request are ${numberOfOpenPages.length}.
-            waitedSeconds : ${waitedSeconds}`);
-       
-        await sleep(1000);
-       if(iteration > 30)
-            return;
-
-       return waitForAllTabsToFinish(iteration+1)
-    }
-
-}
-
 async function renderHtml (urlRequest){
 
     let clientUrl = urlRequest.url.replace(/^\//, '');
@@ -613,7 +177,7 @@ async function renderHtml (urlRequest){
     let response;
     let page;
 
-    activeRenders++;
+    chromeBrowser.incrementActiveRenders();
     let reqStatus = {};
     // name (thesaurus/countries/jsdelivr) -> { hit, miss } — see CACHEABLE_ENTRIES.
     const cacheCounts = {};
@@ -624,15 +188,15 @@ async function renderHtml (urlRequest){
     try {
 
             urlRequest.status = 'inflight';
-            
-            await initializeChrome();
+
+            const browser = await chromeBrowser.initializeChrome();
 
             urlRequest.renderStartedOn = new Date();
 
             page = await browser.newPage();
             await page.setRequestInterception(true);
-    
-                        
+
+
             clientUrl = clientUrl.replace(/^\//, '');
             log(`Rendering url: ${clientUrl}`)
 
@@ -666,7 +230,7 @@ async function renderHtml (urlRequest){
                 abortRequest = isImg;
                 abortRequest = abortRequest || abortNetworkUrlRequest(requestUrl);
                 // if(requestUrl.indexOf('bootstrap.min.css')>=0){
-                //     log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
+                //     log(`making request for ${cURL.hostname}, ${requestUrl}}`);
                 // }
 
                 if(abortRequest){
@@ -687,14 +251,14 @@ async function renderHtml (urlRequest){
                     reqStatus[requestUrl] = 'request';
                 }
 
-                let headers = {...req.headers() }                
+                let headers = {...req.headers() }
                 // if(!isCBDDomain(cURL.hostname)){
                 //     // delete headers['x-is-prerender'];// = 'true';
                 //     // if(headers['access-control-request-headers'] == 'x-is-prerender')
                 //     //     delete headers['access-control-request-headers']
-                //     // deleteOriginRequestHeaders(headers);        
-                    
-                    // log(`making request for ${cURL.hostname}, ${requestUrl}}`); 
+                //     // deleteOriginRequestHeaders(headers);
+
+                    // log(`making request for ${cURL.hostname}, ${requestUrl}}`);
                 // }
 
                 let redirectFrom = '';
@@ -710,7 +274,7 @@ async function renderHtml (urlRequest){
                 }
 
                 req.continue();
-                
+
             });
             page.on('response', async res => {
                 // console.log(res.url(), res.status())
@@ -746,11 +310,11 @@ async function renderHtml (urlRequest){
             })
             const stylesheetContents = {};
             let   importStyleSheets  = []
-            
+
 
             const timeout = config.PAGE_LOAD_TIMEOUT
             let pdfOpts = {waitUntil : 'networkidle0', timeout} //timeout:0 (makes it infinite)
-            
+
             //set X-Is-Prerender to avoid iscrawler check since headless userAgent is also consider crawler
             // await page.setExtraHTTPHeaders({
             //     'x-is-prerender': 'true'
@@ -780,7 +344,7 @@ async function renderHtml (urlRequest){
 
             // await page.setViewport({ width: 1920, height: 1001 });
             // log('viewport set');
-           
+
             // Replace stylesheets in the page with their equivalent <style>.
             await page.$$eval('link[rel="stylesheet"]', (links, content) => {
                 links.forEach(link => {
@@ -802,12 +366,12 @@ async function renderHtml (urlRequest){
                             });
                 var css = stylesheetContents[newKey]
                 pageContent = pageContent.replace(style.originalString, css);
- 
+
             });
             log('Done combining import stylesheets');
 
             log(`page content received, length : ${pageContent.length}(${formatBytes(pageContent.length)})`)
-            
+
             pageContent = removeScriptTags(pageContent);
             log('remove script end');
 
@@ -882,8 +446,9 @@ async function renderHtml (urlRequest){
         // Chrome itself perfectly healthy — restarting anyway would throw away its warm
         // HTTP cache (see CHROME_USER_DATA_DIR) for no reason. Only restart here if
         // Chrome is actually gone.
+        const browser = chromeBrowser.getBrowser();
         if(!browser || !browser.isConnected()){
-            restartBrowser = true;
+            chromeBrowser.requestRestart();
             log('Browser is disconnected, flagged for restart')
             reportEvent('browser_restart', {
                 url: clientUrl,
@@ -898,7 +463,7 @@ async function renderHtml (urlRequest){
         }
     }
     finally{
-        activeRenders--;
+        chromeBrowser.decrementActiveRenders();
         if(page){
             try{
                 await page.close();
@@ -909,173 +474,7 @@ async function renderHtml (urlRequest){
         }
     }
 
-    
-}
 
-function cleanUpInflightRequests(){
-
-    Object.keys(inflightRequests)?.forEach(url=>{
-        const urlRequest = inflightRequests[url];
-
-        //should not exists more than 5 mins
-        if(['finished', 'error'].includes(urlRequest?.status)){
-            const timeSince = diffInMinutes(urlRequest.renderFinishedOn||urlRequest.renderErrorOn, new Date);
-
-            if(timeSince > 5){
-                log(`cleaning url after 5 mins of processing ${url}`)
-                inflightRequests[url] = undefined;
-                delete inflightRequests[url];
-            }
-
-        }
-    });
-
-}
-
-function diffInMinutes(dt2, dt1) 
- {
-  // Calculate the difference in milliseconds between the two provided dates and convert it to seconds
-  var diff =(dt2.getTime() - dt1.getTime()) / 1000;
-  // Convert the difference from seconds to minutes
-  diff /= 60;
-  // Return the absolute value of the rounded difference in minutes
-  return Math.abs(Math.round(diff));
- }
-
-function removeScriptTags(content){
-
-    // code from https://github.com/prerender/prerender/blob/master/lib/plugins/removeScriptTags.js
-    var matches = content.toString().match(/<script(?:.*?)>(?:[\S\s]*?)<\/script>/gi);
-    for (let i = 0; matches && i < matches.length; i++) {
-        if (matches[i].indexOf('application/ld+json') === -1) {
-            content = content.toString().replace(matches[i], '');
-        }
-    }
-
-    //<link rel="import" src=""> tags can contain script tags. Since they are already rendered, let's remove them
-    matches = content.toString().match(/<link[^>]+?rel="import"[^>]*?>/i);
-    for (let i = 0; matches && i < matches.length; i++) {
-        content = content.toString().replace(matches[i], '');
-    }
-
-    //remove comments
-    // content = content.replace(/(<!--.*?-->)|(<!--[\w\W\n\s]+?-->)/gm, '')
-    
-    return content;
-}
-
-function log(message, ...params){
-
-    if(process.env.debug == 'true'){
-        // -lastCall
-        console.log(new Date(), message, ...params, `${(((+new Date()))/1000).toFixed(5)} secs`);
-        // lastCall = +new Date()
-    }
-
-}
-function logError(message, ...params){
-// -lastCall
-    console.error(new Date(), message,params, `${(((+new Date()))/1000).toFixed(5)} secs`);
-    // lastCall = +new Date()
-
-}
-
-function formatBytes(bytes, decimals, binaryUnits) {
-    if(bytes == 0) {
-        return '0 Bytes';
-    }
-    var unitMultiple = (binaryUnits) ? 1024 : 1000; 
-    var unitNames = (unitMultiple === 1024) ? // 1000 bytes in 1 Kilobyte (KB) or 1024 bytes for the binary version (KiB)
-        ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB']: 
-        ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-    var unitChanges = Math.floor(Math.log(bytes) / Math.log(unitMultiple));
-    return parseFloat((bytes / Math.pow(unitMultiple, unitChanges)).toFixed(decimals || 0)) + ' ' + unitNames[unitChanges];
-}
-
-function isCBDDomain(hostname){
-   
-    return /cbd\.int$/.test(hostname) || 
-           /cbddev\.xyz$/.test(hostname) || hostname == 'localhost'
-}   
-
-function abortNetworkUrlRequest(url){
-
-    return /api\.cbddev\.xyz\/socket\.io/.test(url) ||
-           /api\.cbd\.int\/socket\.io/.test(url) ||
-        //    /socket\.io/.test(url) ||
-           /cdn\.slaask\.com/.test(url) ||
-           /www\.gstatic\.com/.test(url) ||
-           /\/error-logs/.test(url) ||
-           /un-geospatial\.github\.io/.test(url)
-        //     ||
-        //    /\app\/authorize\.html$/.test(url)
-
-}
-
-function updateBaseUrl(content, baseUrl){
-
-    let matches = content.toString().match(/href="((\/?)app\/.*)"[^>]*?>/gi);
-    for (let i = 0; matches && i < matches.length; i++) {
-        
-        content = content.toString().replace(matches[i], matches[i].replace('href="/app', `href="${baseUrl}/app`));
-    }
-
-    matches = content.toString().match(/<img[^>]+?src="(\/app\/.*)"[^>]*?>/gi);
-    for (let i = 0; matches && i < matches.length; i++) {
-        
-        content = content.toString().replace(matches[i], matches[i].replace('src="/app', `src="${baseUrl}/app`));
-    }
-
-    return content;
-}
-
-function getInflightCount(){
-    return Object.keys(inflightRequests).length;
-}
-
-async function captureDiagnostics(){
-    const mem = process.memoryUsage();
-    let openPages = null;
-    try{
-        if(browser) openPages = (await browser.pages()).length;
-    }
-    catch(e){
-        openPages = 'unavailable';
-    }
-    return {
-        instance: INSTANCE_ID,
-        rssMB: Math.round(mem.rss / (1024*1024)),
-        heapUsedMB: Math.round(mem.heapUsed / (1024*1024)),
-        externalMB: Math.round(mem.external / (1024*1024)),
-        inflightCount: getInflightCount(),
-        activeRenders,
-        openPages
-    };
-}
-
-async function logInflightSnapshot(){
-    const entries = Object.values(inflightRequests);
-    const now = Date.now();
-    const detail = entries.map(r => ({
-        url: r.url,
-        status: r.status,
-        elapsedMs: now - r.requestDate.getTime(),
-        userAgent: r.userAgent
-    }));
-    const rendering = detail.filter(e => e.status === 'inflight');
-    const queued = detail.filter(e => e.status === 'request');
-
-    // Was already computed on error paths (see catch blocks above) but only ever
-    // logged locally; reused here so the dashboard's per-instance memory/openPages
-    // reflects steady-state health too, not just the moment something broke.
-    const { rssMB, heapUsedMB, externalMB, openPages } = await captureDiagnostics();
-
-    // Reported unconditionally (even when empty) so the dashboard clears an instance's
-    // display when it goes idle instead of showing its last-known busy state forever.
-    // Entry count in the disk-persisted network response cache (thesaurus/countries/
-    // jsdelivr) — has no TTL-driven eviction of its own, so this is the visibility
-    // that catches unbounded growth before it's a problem, not just a hit-rate number.
-    reportLiveStatus({ instance: INSTANCE_ID, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries: networkResponseCache.size });
 }
 
 setInterval(() => {
