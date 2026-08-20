@@ -35,7 +35,13 @@ const cacheControl = 7*24*60*60; //7days
 // row on the dashboard, no other code changes needed.
 const CACHEABLE_ENTRIES = [
     { name: 'thesaurus', prefix: 'https://api.cbd.int/api/v2013/thesaurus/', ttlMs: 7 * 24 * 60 * 60 * 1000 },
-    { name: 'countries', prefix: 'https://api.cbd.int/api/v2013/countries/', ttlMs: 7 * 24 * 60 * 60 * 1000 },
+    // No trailing slash: the site's actual call is `$http.get("/api/v2013/countries",
+    // {params:{s:sortBy}})` (commonjs.getCountries, used by the shared header
+    // directive on nearly every page) — the real request URL is
+    // ".../countries?s%5B...%5D=1" with no "/" before the query string, so a
+    // trailing-slash prefix here never matched it and this traffic was silently
+    // never cached (and never counted on the dashboard).
+    { name: 'countries', prefix: 'https://api.cbd.int/api/v2013/countries', ttlMs: 7 * 24 * 60 * 60 * 1000 },
     { name: 'jsdelivr', prefix: 'https://cdn.jsdelivr.net/', ttlMs: 30 * 24 * 60 * 60 * 1000 },
 ];
 const networkResponseCache = new Map();
@@ -120,13 +126,33 @@ const SOFT_404_PATTERNS = [
     /class="text-medium-emphasis float-start">The page you are looking for was not found\.<\/p>/ // ort.cbd.int (separate React app)
 ];
 
-// Legacy record URLs missing the /database/ segment (e.g. /en/RA/BCH-RA-CU-115450
-// instead of /en/database/RA/BCH-RA-CU-115450) — bots keep re-crawling these from a
-// pre-migration index. \2 backreferences the type segment against the ID's own type
-// component, so a mismatch (e.g. /ORG/BCH-NR-...) doesn't match. Redirecting instead
-// of rendering means we never spin up a Puppeteer page for a URL shape that always
-// 404s anyway.
-const MISSING_DATABASE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4})(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
+// Legacy record URLs missing the /database/{TYPE}/ segment, in either of two shapes.
+// Bots keep re-crawling both from pre-migration indexes; redirecting instead of
+// rendering means we never spin up a Puppeteer page for a URL shape that always
+// fails anyway. Kept as separate patterns (rather than one shared regex) since the
+// type comes from a different place in each, needing its own correction logic.
+const MISSING_DATABASE_SEGMENT_RE = [
+    // Type-directory still present, /database/ isn't (e.g. /en/RA/BCH-RA-CU-115450
+    // instead of /en/database/RA/BCH-RA-CU-115450). \2 backreferences the directory
+    // against the ID's own type component, so a mismatch (e.g. /ORG/BCH-NR-...)
+    // doesn't match.
+    {
+        re: /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{2,4})(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i,
+        correct: (lang, dirType, idSuffix) => `${lang}database/${dirType}${idSuffix}`
+    },
+    // Type-directory missing too — the ID sits bare off the lang prefix/root (e.g.
+    // /en/ABSCH-A19A20-SCBD-238048-3 instead of /en/database/A19A20/ABSCH-A19A20-
+    // SCBD-238048-3). Verified live via an actual render: the bare/no-type-dir URL
+    // either soft-404s or hangs for 30s+ before failing (worse — it ties up a render
+    // slot), while inserting the type directory renders the real page. The type is
+    // read straight from the ID itself (no directory to backreference), so unlike
+    // the pattern above it isn't restricted to plain letters — ABS-CH's own type
+    // codes are alphanumeric (e.g. "A19A20").
+    {
+        re: /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)([a-z]{3,6})-([a-z0-9]{2,8})-([a-z]{2,4})-(\d+(?:-\d{1,3})?)$/i,
+        correct: (lang, site, idType, org, num) => `${lang}database/${idType}/${site}-${idType}-${org}-${num}`
+    }
+];
 
 // Same underlying legacy-URL bug as MISSING_DATABASE_SEGMENT_RE, but here /database/
 // is present and a stray "}" survives right after the type segment — probably a
@@ -327,10 +353,12 @@ async function renderUrl (req, res){
             return res.status(404).send('Not found');
         }
 
-        if(MISSING_DATABASE_SEGMENT_RE.test(htmlUrl.pathname)){
-            const correctedPath = htmlUrl.pathname.replace(MISSING_DATABASE_SEGMENT_RE, '$1database/$2$3');
+        for(const { re, correct } of MISSING_DATABASE_SEGMENT_RE){
+            const match = htmlUrl.pathname.match(re);
+            if(!match) continue;
+            const correctedPath = correct(...match.slice(1));
             const redirectUrl = `${htmlUrl.origin}${correctedPath}${htmlUrl.search}`;
-            log(`Legacy URL missing /database/ segment, redirecting ${clientUrl} -> ${redirectUrl}`);
+            log(`Legacy URL missing /database/{TYPE}/ segment, redirecting ${clientUrl} -> ${redirectUrl}`);
             reportEvent('legacy_url_redirect', { url: clientUrl, domain: htmlUrl.hostname, redirectTo: redirectUrl, ...requesterInfo(req) });
             return res.redirect(301, redirectUrl);
         }
