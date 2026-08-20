@@ -6,3 +6,6 @@ node_modules
 .claude/
 
 deploy.sh
+deploy-nginx.sh
+
+plan/
