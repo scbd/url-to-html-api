@@ -8,6 +8,7 @@ const DURATIONS_FILE = path.join(DATA_DIR, 'durations.json');
 const URL_SEEN_FILE = path.join(DATA_DIR, 'urlSeen.json');
 const ROUTE_PATTERNS_FILE = path.join(DATA_DIR, 'routePatterns.json');
 const CACHE_STATS_FILE = path.join(DATA_DIR, 'cacheStats.json');
+const SOFT_404_URLS_FILE = path.join(DATA_DIR, 'soft404Urls.json');
 const RETENTION_DAYS = 30;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -276,6 +277,49 @@ function pruneOldCacheStats() {
   saveCacheStats();
 }
 
+function loadSoft404Urls() {
+  if (!fs.existsSync(SOFT_404_URLS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(SOFT_404_URLS_FILE, 'utf8'));
+  } catch (e) {
+    return {};
+  }
+}
+
+const soft404Urls = loadSoft404Urls();
+
+function saveSoft404Urls() {
+  fs.writeFile(SOFT_404_URLS_FILE, JSON.stringify(soft404Urls), (err) => {
+    if (err) console.error('Failed to write stats soft404Urls', err);
+  });
+}
+
+// URL -> last-seen day it was confirmed to render as a soft 404. Lets renderer.js
+// short-circuit a URL it otherwise only suspects is bogus (e.g. matches
+// COUNTRIES_SUFFIX_RE) once this service has actually seen it render a soft-404
+// shell, without ever 404ing a URL that hasn't been confirmed bad first.
+function recordSoft404Url(urlStr) {
+  if (!urlStr) return;
+  soft404Urls[urlStr] = new Date().toISOString().slice(0, 10);
+  saveSoft404Urls();
+}
+
+function isKnownSoft404Url(urlStr) {
+  return Boolean(urlStr && soft404Urls[urlStr]);
+}
+
+function pruneOldSoft404Urls() {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  Object.keys(soft404Urls).forEach((urlStr) => {
+    if (soft404Urls[urlStr] < cutoff) delete soft404Urls[urlStr];
+  });
+  saveSoft404Urls();
+}
+
+function countSoft404Urls() {
+  return Object.keys(soft404Urls).length;
+}
+
 module.exports = {
   appendEvent,
   readEvents,
@@ -296,5 +340,9 @@ module.exports = {
   recordCacheCount,
   readCacheStats,
   pruneOldCacheStats,
+  recordSoft404Url,
+  isKnownSoft404Url,
+  pruneOldSoft404Urls,
+  countSoft404Urls,
   RETENTION_DAYS,
 };

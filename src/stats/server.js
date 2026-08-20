@@ -19,14 +19,17 @@ app.post('/events', (req, res) => {
   const event = req.body || {};
   const client = classifyUserAgent(event.userAgent) || 'human';
   // Kept out of incrementCount — statusOf() on the dashboard buckets any unrecognized
-  // type as "error", and a redirect is the opposite of a failure (it's a render we
-  // avoided). Still appended to the raw event log below so the dashboard can show a
-  // recent list for rollout monitoring.
-  if (event.type !== 'legacy_url_redirect') {
+  // type as "error", and a redirect/skipped-render is the opposite of a failure (it's
+  // a render we avoided). Still appended to the raw event log below so the dashboard
+  // can show a recent list for rollout monitoring.
+  if (event.type !== 'legacy_url_redirect' && event.type !== 'malformed_url_404' && event.type !== 'security_probe_404') {
     store.incrementCount(event.type, event.domain, client);
   }
   if (event.type !== 'render_success') {
     store.appendEvent(event);
+  }
+  if (event.type === 'soft_404' && event.url) {
+    store.recordSoft404Url(event.url);
   }
   if (typeof event.durationMs === 'number') {
     store.recordDuration(event.domain, 'renderDurationMs', event.durationMs);
@@ -91,6 +94,13 @@ app.get('/api/live', (req, res) => {
       ageMs: now - v.updatedAt,
     }));
   res.json({ instances });
+});
+
+// Lets renderer.js confirm a URL it only suspects is bogus (matches
+// COUNTRIES_SUFFIX_RE) has actually rendered as a soft 404 before, so it only ever
+// short-circuits a URL this service has independently confirmed is bad.
+app.get('/api/known-soft-404', (req, res) => {
+  res.json({ known: store.isKnownSoft404Url(req.query.url) });
 });
 
 // Pre-migration data (before per-bot-name tracking) stored this bucket's bot traffic
@@ -205,6 +215,7 @@ setInterval(() => {
   store.pruneOldUrlSeen();
   store.pruneOldRoutePatterns();
   store.pruneOldCacheStats();
+  store.pruneOldSoft404Urls();
   console.log(`Pruned stats events, ${remaining} remaining`);
 }, PRUNE_INTERVAL_MS);
 
