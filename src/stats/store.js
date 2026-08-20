@@ -7,6 +7,7 @@ const COUNTS_FILE = path.join(DATA_DIR, 'counts.json');
 const DURATIONS_FILE = path.join(DATA_DIR, 'durations.json');
 const URL_SEEN_FILE = path.join(DATA_DIR, 'urlSeen.json');
 const ROUTE_PATTERNS_FILE = path.join(DATA_DIR, 'routePatterns.json');
+const CACHE_STATS_FILE = path.join(DATA_DIR, 'cacheStats.json');
 const RETENTION_DAYS = 30;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -230,6 +231,51 @@ function pruneOldRoutePatterns() {
   saveRoutePatterns();
 }
 
+function loadCacheStats() {
+  if (!fs.existsSync(CACHE_STATS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(CACHE_STATS_FILE, 'utf8'));
+  } catch (e) {
+    return {};
+  }
+}
+
+const cacheStats = loadCacheStats();
+
+function saveCacheStats() {
+  fs.writeFile(CACHE_STATS_FILE, JSON.stringify(cacheStats), (err) => {
+    if (err) console.error('Failed to write stats cacheStats', err);
+  });
+}
+
+// One bucket per day/domain/cache-name/outcome. cacheName distinguishes independent
+// caches (e.g. "thesaurus" — renderer.js's in-process API response cache — vs
+// "nginx_edge" — the X-Proxy-Cache status nginx forwards per request); outcome is
+// cache-specific ("hit"/"miss" for thesaurus, the raw $upstream_cache_status value
+// lowercased for nginx_edge).
+function recordCacheCount(cacheName, domain, outcome, n = 1) {
+  if (!n) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const d = domain || 'unknown';
+  cacheStats[day] = cacheStats[day] || {};
+  cacheStats[day][d] = cacheStats[day][d] || {};
+  cacheStats[day][d][cacheName] = cacheStats[day][d][cacheName] || {};
+  cacheStats[day][d][cacheName][outcome] = (cacheStats[day][d][cacheName][outcome] || 0) + n;
+  saveCacheStats();
+}
+
+function readCacheStats() {
+  return cacheStats;
+}
+
+function pruneOldCacheStats() {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  Object.keys(cacheStats).forEach((day) => {
+    if (day < cutoff) delete cacheStats[day];
+  });
+  saveCacheStats();
+}
+
 module.exports = {
   appendEvent,
   readEvents,
@@ -247,5 +293,8 @@ module.exports = {
   incrementRoutePattern,
   readRoutePatterns,
   pruneOldRoutePatterns,
+  recordCacheCount,
+  readCacheStats,
+  pruneOldCacheStats,
   RETENTION_DAYS,
 };

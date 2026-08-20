@@ -176,7 +176,11 @@ function requesterInfo(req){
         ip: clientIp(req),
         userAgent: req.headers['x-origin-user-agent'] || req.headers['user-agent'] || 'unknown',
         referer: req.headers['referer'] || req.headers['referrer'] || '',
-        country: req.headers['cloudfront-viewer-country'] || ''
+        country: req.headers['cloudfront-viewer-country'] || '',
+        // nginx's $upstream_cache_status, forwarded per stack/data/nginx/app.conf. Only
+        // ever MISS/EXPIRED/STALE/BYPASS/REVALIDATED/UPDATING — a true cache HIT is served
+        // by nginx directly and never reaches this service.
+        edgeCacheStatus: req.headers['x-proxy-cache'] || ''
     };
 }
 
@@ -504,6 +508,12 @@ async function renderHtml (urlRequest){
 
     activeRenders++;
     let reqStatus = {};
+    // name (thesaurus/countries/jsdelivr) -> { hit, miss } — see CACHEABLE_ENTRIES.
+    const cacheCounts = {};
+    function bumpCacheCount(name, outcome){
+        cacheCounts[name] = cacheCounts[name] || { hit: 0, miss: 0 };
+        cacheCounts[name][outcome]++;
+    }
     try {
 
             urlRequest.status = 'inflight';
@@ -726,7 +736,9 @@ async function renderHtml (urlRequest){
                 domain: htmlUrl.hostname,
                 durationMs: (+new Date())-startTime,
                 queueWaitMs: urlRequest.renderStartedOn.getTime() - urlRequest.requestDate.getTime(),
-                userAgent: urlRequest.userAgent
+                userAgent: urlRequest.userAgent,
+                cacheCounts,
+                edgeCacheStatus: urlRequest.edgeCacheStatus
             });
 
     } catch (err) {
@@ -953,7 +965,10 @@ async function logInflightSnapshot(){
 
     // Reported unconditionally (even when empty) so the dashboard clears an instance's
     // display when it goes idle instead of showing its last-known busy state forever.
-    reportLiveStatus({ instance: INSTANCE_ID, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages });
+    // Entry count in the disk-persisted network response cache (thesaurus/countries/
+    // jsdelivr) — has no TTL-driven eviction of its own, so this is the visibility
+    // that catches unbounded growth before it's a problem, not just a hit-rate number.
+    reportLiveStatus({ instance: INSTANCE_ID, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries: networkResponseCache.size });
 }
 
 setInterval(() => {

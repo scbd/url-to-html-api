@@ -34,6 +34,21 @@ app.post('/events', (req, res) => {
   if (typeof event.queueWaitMs === 'number') {
     store.recordDuration(event.domain, 'queueWaitMs', event.queueWaitMs);
   }
+  // Per-name breakdown (thesaurus/countries/jsdelivr — see CACHEABLE_ENTRIES in
+  // renderer.js) rather than one pooled counter, so a jsdelivr URL's very different
+  // hit-rate profile doesn't get blended into the API-lookup numbers.
+  if (event.cacheCounts && typeof event.cacheCounts === 'object') {
+    Object.entries(event.cacheCounts).forEach(([name, counts]) => {
+      if (typeof counts.hit === 'number' && counts.hit) store.recordCacheCount(name, event.domain, 'hit', counts.hit);
+      if (typeof counts.miss === 'number' && counts.miss) store.recordCacheCount(name, event.domain, 'miss', counts.miss);
+    });
+  }
+  // Only ever a MISS/EXPIRED/STALE/BYPASS/REVALIDATED/UPDATING value — a true cache HIT
+  // at the nginx edge never reaches this service in the first place, so "hit rate" isn't
+  // derivable from this alone. This is "of the renders we did, why did each bypass cache."
+  if (event.edgeCacheStatus) {
+    store.recordCacheCount('nginx_edge', event.domain, event.edgeCacheStatus.toLowerCase(), 1);
+  }
   // Scoped to successful renders only — a failed render didn't actually produce cached
   // output, so counting it as "duplicate work" or a "hot route" would overstate both.
   if (event.type === 'render_success' && event.url) {
@@ -50,9 +65,9 @@ const LIVE_INSTANCE_STALE_MS = 60 * 1000;
 const liveInstances = {};
 
 app.post('/live-status', (req, res) => {
-  const { instance, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages } = req.body || {};
+  const { instance, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries } = req.body || {};
   if (!instance) return res.sendStatus(400);
-  liveInstances[instance] = { activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, updatedAt: Date.now() };
+  liveInstances[instance] = { activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries, updatedAt: Date.now() };
   res.sendStatus(204);
 });
 
@@ -72,6 +87,7 @@ app.get('/api/live', (req, res) => {
       heapUsedMB: v.heapUsedMB,
       externalMB: v.externalMB,
       openPages: v.openPages,
+      networkResponseCacheEntries: v.networkResponseCacheEntries,
       ageMs: now - v.updatedAt,
     }));
   res.json({ instances });
@@ -111,8 +127,11 @@ app.get('/api/stats', (req, res) => {
   if (req.query.asOf) {
     allEvents = allEvents.filter((e) => e.timestamp.slice(0, 10) === req.query.asOf);
   }
-  const recentErrors = allEvents.filter((e) => e.type !== 'soft_404').slice(-200).reverse();
+  const recentErrors = allEvents.filter((e) => e.type !== 'soft_404' && e.type !== 'legacy_url_redirect').slice(-200).reverse();
   const recentSoftErrors = allEvents.filter((e) => e.type === 'soft_404').slice(-200).reverse();
+  // Temporary rollout-monitoring list for the missing-/database/-segment redirect —
+  // remove once that's confirmed clean. See MISSING_DATABASE_SEGMENT_RE in renderer.js.
+  const recentRedirects = allEvents.filter((e) => e.type === 'legacy_url_redirect').slice(-200).reverse();
 
   const durationRows = [];
   Object.entries(store.readDurations()).forEach(([date, domains]) => {
@@ -148,6 +167,17 @@ app.get('/api/stats', (req, res) => {
     });
   });
 
+  const cacheStatRows = [];
+  Object.entries(store.readCacheStats()).forEach(([date, domains]) => {
+    Object.entries(domains).forEach(([domain, caches]) => {
+      Object.entries(caches).forEach(([cacheName, outcomes]) => {
+        Object.entries(outcomes).forEach(([outcome, n]) => {
+          cacheStatRows.push({ date, domain, cacheName, outcome, n });
+        });
+      });
+    });
+  });
+
   res.json({
     retentionDays: store.RETENTION_DAYS,
     counts: rows,
@@ -155,8 +185,10 @@ app.get('/api/stats', (req, res) => {
     durationBucketBoundaries: store.DURATION_BUCKETS_MS,
     duplicates: duplicateRows,
     routePatterns: routePatternRows,
+    cacheStats: cacheStatRows,
     recentErrors,
     recentSoftErrors,
+    recentRedirects,
   });
 });
 
@@ -172,6 +204,7 @@ setInterval(() => {
   store.pruneOldDurations();
   store.pruneOldUrlSeen();
   store.pruneOldRoutePatterns();
+  store.pruneOldCacheStats();
   console.log(`Pruned stats events, ${remaining} remaining`);
 }, PRUNE_INTERVAL_MS);
 
