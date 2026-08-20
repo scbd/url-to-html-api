@@ -1,6 +1,8 @@
 ﻿
 const url       = require('url');
 const os        = require('os');
+const fs        = require('fs');
+const path      = require('path');
 // const chrome    = require("@sparticuz/chromium")
 const puppeteer = require("puppeteer")
 const { forEach, findKey }  = require('lodash');
@@ -11,20 +13,97 @@ const config = require('./config');
 // activity from different replicas isn't confused with each other when reading logs.
 const INSTANCE_ID = os.hostname();
 
+// Persists Chrome's own HTTP disk cache across restartChrome() calls within this
+// container's lifetime (still wiped on a full container recreate/redeploy, since
+// nothing mounts this path to a volume). Pages all share the default browser context
+// (see browser.newPage() below, no incognito context), so this cache is already doing
+// real work for repeat static assets — no reason to throw it away every time Chrome relaunches.
+const CHROME_USER_DATA_DIR = process.env.CHROME_USER_DATA_DIR || path.join(__dirname, '../data/chrome-profile');
+fs.mkdirSync(CHROME_USER_DATA_DIR, { recursive: true });
+
 let browser;
 const cacheControl = 7*24*60*60; //7days
 
-// Slow-changing API calls made by rendered pages (e.g. thesaurus lookups) are cached
-// in-process across renders so repeated terms don't hit the origin API every time.
-const CACHEABLE_URL_PREFIXES = [
-    'https://api.cbd.int/api/v2013/thesaurus/'
+// Slow-changing API calls made by rendered pages (e.g. thesaurus/countries lookups)
+// and CDN-hosted libs are cached in-process, and persisted to disk (one file per
+// `name`, see cacheStorageFilePath below), so repeated calls don't hit the origin/CDN
+// on every render. Thesaurus/countries reference data hardly ever changes, so 7 days
+// is safe; jsdelivr gets longer still since its URLs are npm-version-pinned and
+// therefore effectively immutable at a given URL.
+// `name` is also the dashboard-facing cache bucket (Caching tab) and the disk-file
+// key — adding an entry here automatically gets its own persisted file and its own
+// row on the dashboard, no other code changes needed.
+const CACHEABLE_ENTRIES = [
+    { name: 'thesaurus', prefix: 'https://api.cbd.int/api/v2013/thesaurus/', ttlMs: 7 * 24 * 60 * 60 * 1000 },
+    { name: 'countries', prefix: 'https://api.cbd.int/api/v2013/countries/', ttlMs: 7 * 24 * 60 * 60 * 1000 },
+    { name: 'jsdelivr', prefix: 'https://cdn.jsdelivr.net/', ttlMs: 30 * 24 * 60 * 60 * 1000 },
 ];
-const CACHEABLE_RESPONSE_TTL_MS = 24*60*60*1000; //24 hours
 const networkResponseCache = new Map();
 
-function isCacheableRequestUrl(requestUrl){
-    return CACHEABLE_URL_PREFIXES.some(prefix => requestUrl.startsWith(prefix));
+function matchCacheableEntry(requestUrl){
+    return CACHEABLE_ENTRIES.find((e) => requestUrl.startsWith(e.prefix)) || null;
 }
+
+// One file per cache name rather than one shared file — a jsdelivr entry is large and
+// rarely changes (30-day TTL), while thesaurus/countries entries are many, small, and
+// churn daily; sharing a file would mean every thesaurus write also rewrites
+// jsdelivr's bodies for no reason. Bodies persist as base64 since they're Buffers
+// (could be binary, e.g. a jsdelivr asset) and JSON has no native byte-string type.
+const NETWORK_RESPONSE_CACHE_DIR = process.env.NETWORK_RESPONSE_CACHE_DIR || path.join(__dirname, '../data');
+
+function cacheStorageFilePath(name){
+    return path.join(NETWORK_RESPONSE_CACHE_DIR, `network-response-cache-${name}.json`);
+}
+
+function loadNetworkResponseCache(){
+    const now = Date.now();
+    // De-duped in case a future CACHEABLE_ENTRIES addition ever reuses an existing name.
+    const names = [...new Set(CACHEABLE_ENTRIES.map((e) => e.name))];
+    names.forEach((name) => {
+        const file = cacheStorageFilePath(name);
+        try{
+            if(!fs.existsSync(file)) return;
+            const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+            Object.entries(raw).forEach(([entryUrl, entry]) => {
+                if(entry.expiresAt > now){
+                    networkResponseCache.set(entryUrl, { ...entry, body: Buffer.from(entry.body, 'base64') });
+                }
+            });
+        } catch(e){
+            logError(`Failed to load persisted network response cache for "${name}"`, e);
+        }
+    });
+    log(`Loaded ${networkResponseCache.size} cached network responses from disk`);
+}
+
+// Debounced, and scoped to only the cache name(s) that actually changed since the
+// last flush — a burst of thesaurus lookups shouldn't also rewrite jsdelivr's file.
+const dirtyCacheNames = new Set();
+let saveNetworkResponseCacheTimer = null;
+function saveNetworkResponseCache(name){
+    dirtyCacheNames.add(name);
+    if(saveNetworkResponseCacheTimer) return;
+    saveNetworkResponseCacheTimer = setTimeout(() => {
+        saveNetworkResponseCacheTimer = null;
+        const namesToFlush = [...dirtyCacheNames];
+        dirtyCacheNames.clear();
+
+        namesToFlush.forEach((flushName) => {
+            const serializable = {};
+            networkResponseCache.forEach((entry, entryUrl) => {
+                const matched = matchCacheableEntry(entryUrl);
+                if(matched && matched.name === flushName){
+                    serializable[entryUrl] = { ...entry, body: entry.body.toString('base64') };
+                }
+            });
+            fs.writeFile(cacheStorageFilePath(flushName), JSON.stringify(serializable), (err) => {
+                if(err) logError(`Failed to persist network response cache for "${flushName}"`, err);
+            });
+        });
+    }, 2000);
+}
+
+loadNetworkResponseCache();
 // On top of your code
 let restartBrowser = false;
 const MAX_CONCURRENT_RENDERS = 4;
@@ -125,6 +204,7 @@ async function initializeChrome(){
             headless,
             handleSIGTERM: false,
             handleSIGINT: false,
+            userDataDir: CHROME_USER_DATA_DIR,
             // ignoreHTTPSErrors: true,
             // sloMo: config.DEBUG_MODE ? 250 : undefined,
         }
@@ -460,11 +540,14 @@ async function renderHtml (urlRequest){
                     return req.abort();
                 }
 
-                if(req.method() === 'GET' && isCacheableRequestUrl(requestUrl)){
+                const cacheableEntry = req.method() === 'GET' ? matchCacheableEntry(requestUrl) : null;
+                if(cacheableEntry){
                     const cached = networkResponseCache.get(requestUrl);
                     if(cached && cached.expiresAt > Date.now()){
+                        bumpCacheCount(cacheableEntry.name, 'hit');
                         return req.respond(cached);
                     }
+                    bumpCacheCount(cacheableEntry.name, 'miss');
                 }
 
                 if(!abortRequest){
@@ -506,7 +589,8 @@ async function renderHtml (urlRequest){
                     }
                 }
 
-                if(res.request().method() === 'GET' && res.status() === 200 && isCacheableRequestUrl(res.url())){
+                const responseCacheEntry = res.request().method() === 'GET' && res.status() === 200 ? matchCacheableEntry(res.url()) : null;
+                if(responseCacheEntry){
                     try{
                         const body = await res.buffer();
                         const headers = {...res.headers()};
@@ -517,8 +601,9 @@ async function renderHtml (urlRequest){
                             status: res.status(),
                             headers,
                             body,
-                            expiresAt: Date.now() + CACHEABLE_RESPONSE_TTL_MS
+                            expiresAt: Date.now() + responseCacheEntry.ttlMs
                         });
+                        saveNetworkResponseCache(responseCacheEntry.name);
                     } catch(e){
                         // response body not available (e.g. redirect) — just skip caching it
                     }
@@ -657,18 +742,25 @@ async function renderHtml (urlRequest){
             country: urlRequest.country
         });
 
-        restartBrowser = true;
-        log('Request set to restart browser')
-        reportEvent('browser_restart', {
-            url: clientUrl,
-            domain: safeHostname(clientUrl),
-            reason: errorMessage,
-            queueWaitMs,
-            ip: urlRequest.ip,
-            userAgent: urlRequest.userAgent,
-            referer: urlRequest.referer,
-            country: urlRequest.country
-        });
+        // The 'disconnected' listener above already handles genuine crashes/OOM-kills.
+        // Most render_errors (navigation timeout, malformed page markup, etc.) leave
+        // Chrome itself perfectly healthy — restarting anyway would throw away its warm
+        // HTTP cache (see CHROME_USER_DATA_DIR) for no reason. Only restart here if
+        // Chrome is actually gone.
+        if(!browser || !browser.isConnected()){
+            restartBrowser = true;
+            log('Browser is disconnected, flagged for restart')
+            reportEvent('browser_restart', {
+                url: clientUrl,
+                domain: safeHostname(clientUrl),
+                reason: errorMessage,
+                queueWaitMs,
+                ip: urlRequest.ip,
+                userAgent: urlRequest.userAgent,
+                referer: urlRequest.referer,
+                country: urlRequest.country
+            });
+        }
     }
     finally{
         activeRenders--;
