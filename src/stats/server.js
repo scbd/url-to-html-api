@@ -203,6 +203,8 @@ app.get('/api/stats', (req, res) => {
     recentErrors,
     recentSoftErrors,
     recentRedirects,
+    recentMalformedUrls,
+    knownSoft404UrlCount: store.countSoft404Urls(),
   });
 });
 
