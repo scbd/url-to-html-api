@@ -207,6 +207,17 @@
   #tooltip.show { opacity: 1; }
   #tooltip .tt-value { font-weight: 700; }
   #tooltip .tt-label { color: var(--text-muted); }
+
+  #help-tooltip {
+    position: fixed; pointer-events: none; z-index: 50;
+    background: var(--text-primary); color: var(--page-plane);
+    font-size: 12px; line-height: 1.4; padding: 8px 10px; border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    opacity: 0; transform: translateY(2px); transition: opacity 0.1s ease;
+    max-width: 280px;
+  }
+  #help-tooltip.show { opacity: 1; }
+  .help-target { cursor: help; }
 </style>
 </head>
 <body>
@@ -268,9 +279,14 @@
             <span v-if="totalQueued" class="tab-badge">{{ totalQueued }} queued</span>
           </button>
           <button role="tab" data-tab-btn="traffic" :aria-pressed="activeTab === 'traffic'" @click="activeTab = 'traffic'">Traffic</button>
+          <button role="tab" data-tab-btn="caching" :aria-pressed="activeTab === 'caching'" @click="activeTab = 'caching'">Caching</button>
           <button role="tab" data-tab-btn="errors" :aria-pressed="activeTab === 'errors'" @click="activeTab = 'errors'">
             Errors
             <span v-if="failuresInRange" class="tab-badge">{{ formatCompact(failuresInRange) }}</span>
+          </button>
+          <button role="tab" data-tab-btn="redirects" :aria-pressed="activeTab === 'redirects'" @click="activeTab = 'redirects'">
+            Redirects
+            <span v-if="filteredRedirects.length" class="tab-badge">{{ filteredRedirects.length }}</span>
           </button>
         </div>
       </div>
@@ -282,7 +298,11 @@
     <div v-show="activeTab === 'overview'" id="snap-section-1" data-tab-panel="overview">
       <h2>Overview</h2>
       <div class="kpis">
-        <div class="card tile" v-for="k in kpis" :key="k.label">
+        <div
+          class="card tile help-target" v-for="k in kpis" :key="k.label"
+          @pointerenter="showHelp($event, k.hint)" @focus="showHelp($event, k.hint)"
+          @pointerleave="hideHelp" @blur="hideHelp" tabindex="0"
+        >
           <div class="tile-label">{{ k.label }}</div>
           <div class="tile-value" :class="k.cls">{{ k.value }}</div>
           <div class="tile-foot" v-if="k.spark"><div v-html="k.spark"></div></div>
@@ -335,7 +355,11 @@
       <h2>Diagnosis</h2>
       <div v-if="!insights.length" class="gap-note">Not enough signal in this range/filter combination to raise anything worth flagging.</div>
       <div v-else class="insight-grid">
-        <div class="insight-card" v-for="ins in insights" :key="ins.tag + ins.title">
+        <div
+          class="insight-card help-target" v-for="ins in insights" :key="ins.tag + ins.title" tabindex="0"
+          @pointerenter="showHelp($event, ins.hint)" @focus="showHelp($event, ins.hint)"
+          @pointerleave="hideHelp" @blur="hideHelp"
+        >
           <span class="insight-tag">{{ ins.tag }}</span>
           <span class="insight-title">{{ ins.title }}</span>
           <span class="insight-body">{{ ins.body }}</span>
@@ -362,7 +386,7 @@
       </div>
       <div class="table-scroll" style="margin-top:12px">
         <table>
-          <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num">Error rate</th></tr></thead>
+          <thead><tr><th>Domain</th><th class="num">Total</th><th class="num">Success</th><th class="num">Errors</th><th class="num">Restarts</th><th class="num">Soft errors</th><th class="num help-target" tabindex="0" @pointerenter="showHelp($event, 'Errors ÷ total renders for this domain in range. Soft 404s are not counted as errors here.')" @focus="showHelp($event, 'Errors ÷ total renders for this domain in range. Soft 404s are not counted as errors here.')" @pointerleave="hideHelp" @blur="hideHelp">Error rate</th></tr></thead>
           <tbody>
             <tr v-if="!domainRows.length"><td colspan="7" class="empty">No data yet.</td></tr>
             <tr v-for="r in domainRows" :key="r.domain">
@@ -386,15 +410,15 @@
       </div>
       <div v-else>
         <div class="kpis" style="margin-bottom:20px;">
-          <div class="card tile">
+          <div class="card tile help-target" tabindex="0" @pointerenter="showHelp($event, liveHelp.totalRendering)" @focus="showHelp($event, liveHelp.totalRendering)" @pointerleave="hideHelp" @blur="hideHelp">
             <div class="tile-label">Total rendering</div>
             <div class="tile-value">{{ totalRendering }}</div>
           </div>
-          <div class="card tile">
+          <div class="card tile help-target" tabindex="0" @pointerenter="showHelp($event, liveHelp.totalQueued)" @focus="showHelp($event, liveHelp.totalQueued)" @pointerleave="hideHelp" @blur="hideHelp">
             <div class="tile-label">Total queued</div>
             <div class="tile-value" :class="totalQueued > 0 ? 'warning' : ''">{{ totalQueued }}</div>
           </div>
-          <div class="card tile">
+          <div class="card tile help-target" tabindex="0" @pointerenter="showHelp($event, liveHelp.oldestQueuedWait)" @focus="showHelp($event, liveHelp.oldestQueuedWait)" @pointerleave="hideHelp" @blur="hideHelp">
             <div class="tile-label">Oldest queued wait</div>
             <div class="tile-value" :class="oldestQueuedMs > 60000 ? 'critical' : oldestQueuedMs > 15000 ? 'warning' : ''">{{ (oldestQueuedMs / 1000).toFixed(0) }}s</div>
           </div>
@@ -415,7 +439,11 @@
           <div class="card instance-card" v-for="inst in instanceCards" :key="inst.instance">
             <div class="instance-head">
               <span class="instance-id" :title="inst.instance">{{ inst.instance }}</span>
-              <span class="instance-state" :class="inst.saturated ? 'saturated' : 'healthy'">{{ inst.saturated ? 'saturated' : 'healthy' }}</span>
+              <span
+                class="instance-state help-target" :class="inst.saturated ? 'saturated' : 'healthy'" tabindex="0"
+                @pointerenter="showHelp($event, liveHelp.saturated)" @focus="showHelp($event, liveHelp.saturated)"
+                @pointerleave="hideHelp" @blur="hideHelp"
+              >{{ inst.saturated ? 'saturated' : 'healthy' }}</span>
             </div>
             <div class="slot-row">
               <div class="slot" v-for="n in MAX_CONCURRENT_RENDERS" :key="n" :class="{ filled: n <= inst.activeRenders }"></div>
@@ -436,6 +464,10 @@
               <div>
                 <div class="instance-stat-label">open pages</div>
                 <div>{{ inst.openPages === undefined ? '–' : inst.openPages }}</div>
+              </div>
+              <div>
+                <div class="instance-stat-label">cached responses</div>
+                <div>{{ inst.networkResponseCacheEntries === undefined ? '–' : inst.networkResponseCacheEntries }}</div>
               </div>
             </div>
           </div>
@@ -464,7 +496,11 @@
     <div v-show="activeTab === 'traffic'" data-tab-panel="traffic">
       <h2>Traffic</h2>
       <div class="kpis" style="margin-bottom:20px;">
-        <div class="card tile" v-for="k in trafficKpis" :key="k.label" :class="{ pending: k.pending }">
+        <div
+          class="card tile help-target" v-for="k in trafficKpis" :key="k.label" :class="{ pending: k.pending }" tabindex="0"
+          @pointerenter="showHelp($event, k.hint)" @focus="showHelp($event, k.hint)"
+          @pointerleave="hideHelp" @blur="hideHelp"
+        >
           <div class="tile-label">{{ k.label }}</div>
           <div class="tile-value">{{ k.value }}</div>
           <div class="tile-sub">{{ k.sub }}</div>
@@ -475,7 +511,15 @@
         <h2>Crawlers by volume</h2>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Bot</th><th>Share of renders</th><th class="num">Total</th><th class="num">Errors</th><th class="num">Soft</th><th class="num">Fail rate</th><th class="num">Signal</th></tr></thead>
+            <thead><tr>
+              <th class="help-target" tabindex="0" @pointerenter="showHelp($event, botHelp.bot)" @focus="showHelp($event, botHelp.bot)" @pointerleave="hideHelp" @blur="hideHelp">Bot</th>
+              <th class="help-target" tabindex="0" @pointerenter="showHelp($event, botHelp.share)" @focus="showHelp($event, botHelp.share)" @pointerleave="hideHelp" @blur="hideHelp">Share of renders</th>
+              <th class="num">Total</th>
+              <th class="num help-target" tabindex="0" @pointerenter="showHelp($event, botHelp.errors)" @focus="showHelp($event, botHelp.errors)" @pointerleave="hideHelp" @blur="hideHelp">Errors</th>
+              <th class="num help-target" tabindex="0" @pointerenter="showHelp($event, botHelp.soft)" @focus="showHelp($event, botHelp.soft)" @pointerleave="hideHelp" @blur="hideHelp">Soft</th>
+              <th class="num help-target" tabindex="0" @pointerenter="showHelp($event, botHelp.rate)" @focus="showHelp($event, botHelp.rate)" @pointerleave="hideHelp" @blur="hideHelp">Fail rate</th>
+              <th class="num help-target" tabindex="0" @pointerenter="showHelp($event, botHelp.signal)" @focus="showHelp($event, botHelp.signal)" @pointerleave="hideHelp" @blur="hideHelp">Signal</th>
+            </tr></thead>
             <tbody>
               <tr v-if="!botRows.length"><td colspan="7" class="empty">No bot traffic in this range.</td></tr>
               <tr v-for="r in botRows" :key="r.bot">
@@ -505,19 +549,19 @@
             <div style="display:flex; flex-direction:column; gap:10px;">
               <div>
                 <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:5px;">
-                  <span>Avg queue wait</span><span>{{ formatMsAsSeconds(renderBudget.queueWaitMs) }}</span>
+                  <span class="help-target" tabindex="0" @pointerenter="showHelp($event, budgetHelp.avgQueueWait)" @focus="showHelp($event, budgetHelp.avgQueueWait)" @pointerleave="hideHelp" @blur="hideHelp">Avg queue wait</span><span>{{ formatMsAsSeconds(renderBudget.queueWaitMs) }}</span>
                 </div>
                 <div class="share-track" style="height:8px;"><div class="share-fill" :style="{ width: renderBudget.queuePct + '%', background: 'var(--status-critical)' }"></div></div>
               </div>
               <div>
                 <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:5px;">
-                  <span>Avg render time</span><span>{{ formatMsAsSeconds(renderBudget.renderDurationMs) }}</span>
+                  <span class="help-target" tabindex="0" @pointerenter="showHelp($event, budgetHelp.avgRenderTime)" @focus="showHelp($event, budgetHelp.avgRenderTime)" @pointerleave="hideHelp" @blur="hideHelp">Avg render time</span><span>{{ formatMsAsSeconds(renderBudget.renderDurationMs) }}</span>
                 </div>
                 <div class="share-track" style="height:8px;"><div class="share-fill" :style="{ width: (100 - renderBudget.queuePct) + '%', background: 'var(--status-good)' }"></div></div>
               </div>
               <div v-if="renderBudget.queueWaitP95Ms !== null || renderBudget.renderDurationP95Ms !== null" style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:4px; font-size:12.5px;">
-                <div><span style="color:var(--text-muted);">p95 queue wait</span><br>{{ formatMsAsSeconds(renderBudget.queueWaitP95Ms) }}</div>
-                <div><span style="color:var(--text-muted);">p95 render time</span><br>{{ formatMsAsSeconds(renderBudget.renderDurationP95Ms) }}</div>
+                <div><span class="help-target" style="color:var(--text-muted);" tabindex="0" @pointerenter="showHelp($event, budgetHelp.p95QueueWait)" @focus="showHelp($event, budgetHelp.p95QueueWait)" @pointerleave="hideHelp" @blur="hideHelp">p95 queue wait</span><br>{{ formatMsAsSeconds(renderBudget.queueWaitP95Ms) }}</div>
+                <div><span class="help-target" style="color:var(--text-muted);" tabindex="0" @pointerenter="showHelp($event, budgetHelp.p95RenderTime)" @focus="showHelp($event, budgetHelp.p95RenderTime)" @pointerleave="hideHelp" @blur="hideHelp">p95 render time</span><br>{{ formatMsAsSeconds(renderBudget.renderDurationP95Ms) }}</div>
               </div>
             </div>
             <div class="gap-note" style="margin-top:12px;" v-if="renderBudget.queueWaitP95Ms === null && renderBudget.renderDurationP95Ms === null">
@@ -546,26 +590,69 @@
       </div>
     </div>
 
+    <!-- ═══ Caching ═══ -->
+    <div v-show="activeTab === 'caching'" data-tab-panel="caching">
+      <h2>Caching</h2>
+      <div class="grid-2">
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;" class="help-target" tabindex="0" @pointerenter="showHelp($event, cacheHelp.thesaurus)" @focus="showHelp($event, cacheHelp.thesaurus)" @pointerleave="hideHelp" @blur="hideHelp">API / CDN response cache</h2>
+          <div v-if="!cacheStatsSummary.apiCacheRows.length" class="empty">No cacheable API/CDN lookups recorded in this range yet.</div>
+          <template v-else>
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              <div v-for="r in cacheStatsSummary.apiCacheRows" :key="r.name">
+                <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">
+                  <span style="font-size:12.5px; text-transform:capitalize; color:var(--text-secondary);">{{ r.name }}</span>
+                  <span
+                    style="font-family:var(--font-mono); font-size:13px;"
+                    :style="{ color: r.hitRate === null ? 'var(--text-muted)' : r.hitRate >= 80 ? 'var(--status-good)' : r.hitRate >= 50 ? 'var(--status-warning)' : 'var(--status-critical)' }"
+                  >{{ r.hitRate === null ? '–' : r.hitRate.toFixed(1) + '%' }}</span>
+                </div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">{{ formatCompact(r.hits) }} hits · {{ formatCompact(r.misses) }} misses</div>
+              </div>
+            </div>
+            <div class="gap-note" style="margin-top:12px;">In-process, persisted to disk (<code>data/network-response-cache.json</code>) — survives a Chrome restart, not a full container restart. Shown separately per cache since TTL/cardinality differ a lot (see <code>CACHEABLE_ENTRIES</code> in <code>renderer.js</code>). Current entry count per replica is on the Live activity tab.</div>
+          </template>
+        </div>
+
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;" class="help-target" tabindex="0" @pointerenter="showHelp($event, cacheHelp.edge)" @focus="showHelp($event, cacheHelp.edge)" @pointerleave="hideHelp" @blur="hideHelp">nginx edge cache</h2>
+          <div v-if="!cacheStatsSummary.edgeRows.length" class="empty">No renders reached this service in this range yet.</div>
+          <template v-else>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div v-for="r in cacheStatsSummary.edgeRows" :key="r.outcome">
+                <div style="display:flex; justify-content:space-between; gap:12px; font-size:12px;">
+                  <span style="color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.03em;">{{ r.outcome }}</span>
+                  <span style="color:var(--text-muted); flex:none;">{{ r.n.toLocaleString() }} ({{ r.pct }}%)</span>
+                </div>
+                <div class="share-track" style="height:6px; margin-top:4px;"><div class="share-fill" :style="{ width: r.pct + '%' }"></div></div>
+              </div>
+            </div>
+            <div class="gap-note" style="margin-top:12px;">Breaks down why each render that reached this service bypassed the edge cache — not a hit rate. A true cache HIT is served by nginx directly and never reaches this service, so it can't appear here.</div>
+          </template>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══ Errors ═══ -->
     <div v-show="activeTab === 'errors'" data-tab-panel="errors">
       <h2>Errors</h2>
       <div class="kpis" style="margin-bottom:20px;">
-        <div class="card tile">
+        <div class="card tile help-target" tabindex="0" @pointerenter="showHelp($event, errorsHelp.failuresInRange)" @focus="showHelp($event, errorsHelp.failuresInRange)" @pointerleave="hideHelp" @blur="hideHelp">
           <div class="tile-label">Failures in range</div>
           <div class="tile-value critical">{{ formatCompact(failuresInRange) }}</div>
           <div class="tile-sub">hard errors + soft 404s</div>
         </div>
-        <div class="card tile">
+        <div class="card tile help-target" tabindex="0" @pointerenter="showHelp($event, errorsHelp.distinctSignatures)" @focus="showHelp($event, errorsHelp.distinctSignatures)" @pointerleave="hideHelp" @blur="hideHelp">
           <div class="tile-label">Distinct signatures</div>
           <div class="tile-value">{{ distinctSignatureCount }}</div>
           <div class="tile-sub">in the current sample (last ~200 events)</div>
         </div>
-        <div class="card tile">
+        <div class="card tile help-target" tabindex="0" @pointerenter="showHelp($event, errorsHelp.restarts)" @focus="showHelp($event, errorsHelp.restarts)" @pointerleave="hideHelp" @blur="hideHelp">
           <div class="tile-label">Browser restarts</div>
           <div class="tile-value" :class="aggregates.byStatus.restart > 0 ? 'warning' : ''">{{ aggregates.byStatus.restart }}</div>
           <div class="tile-sub">{{ mtbfLabel }}</div>
         </div>
-        <div class="card tile" :class="{ pending: !probeHits.length }">
+        <div class="card tile help-target" :class="{ pending: !probeHits.length }" tabindex="0" @pointerenter="showHelp($event, errorsHelp.probes)" @focus="showHelp($event, errorsHelp.probes)" @pointerleave="hideHelp" @blur="hideHelp">
           <div class="tile-label">Probe requests detected</div>
           <div class="tile-value" :class="probeHits.length ? 'critical' : ''">{{ probeHits.length }}</div>
           <div class="tile-sub">credential/dotfile paths, current sample</div>
@@ -576,7 +663,13 @@
         <h2>Grouped failures</h2>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Signature</th><th>Sample URL</th><th class="num">Count</th><th>Top client</th><th>Last seen</th></tr></thead>
+            <thead><tr>
+              <th class="help-target" tabindex="0" @pointerenter="showHelp($event, groupedHelp.signature)" @focus="showHelp($event, groupedHelp.signature)" @pointerleave="hideHelp" @blur="hideHelp">Signature</th>
+              <th>Sample URL</th>
+              <th class="num help-target" tabindex="0" @pointerenter="showHelp($event, groupedHelp.count)" @focus="showHelp($event, groupedHelp.count)" @pointerleave="hideHelp" @blur="hideHelp">Count</th>
+              <th class="help-target" tabindex="0" @pointerenter="showHelp($event, groupedHelp.topClient)" @focus="showHelp($event, groupedHelp.topClient)" @pointerleave="hideHelp" @blur="hideHelp">Top client</th>
+              <th>Last seen</th>
+            </tr></thead>
             <tbody>
               <tr v-if="!errorGroups.length"><td colspan="5" class="empty">No failures in this range.</td></tr>
               <tr v-for="g in errorGroups" :key="g.key">
@@ -660,12 +753,61 @@
       </div>
     </div>
 
+    <!-- ═══ Redirects ═══ -->
+    <div v-show="activeTab === 'redirects'" data-tab-panel="redirects">
+      <h2>Legacy URL redirects <span style="text-transform:none; letter-spacing:0; color:var(--text-muted); font-weight:400;">— temporary, rollout monitoring</span></h2>
+      <div class="gap-note" style="margin-bottom:16px;">301s issued for URLs matching the missing-/database/-segment pattern, before any render was attempted (see <code>MISSING_DATABASE_SEGMENT_RE</code> in <code>renderer.js</code>). Watch for anything that looks like a false-positive match or a redirect loop — remove this tab once the rollout looks clean.</div>
+
+      <div class="kpis" style="margin-bottom:20px;">
+        <div class="card tile pending help-target" tabindex="0" @pointerenter="showHelp($event, errorsHelp.redirects)" @focus="showHelp($event, errorsHelp.redirects)" @pointerleave="hideHelp" @blur="hideHelp">
+          <div class="tile-label">Total redirects</div>
+          <div class="tile-value">{{ filteredRedirects.length }}</div>
+          <div class="tile-sub">current sample (last ~200 events) in range</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">By bot</h2>
+          <div v-if="!redirectBotRows.length" class="empty">No redirects in this range.</div>
+          <div v-else style="display:flex; flex-direction:column; gap:10px;">
+            <div v-for="r in redirectBotRows" :key="r.bot">
+              <div style="display:flex; justify-content:space-between; gap:12px; font-size:12px;">
+                <span style="color:var(--text-secondary);">{{ r.bot }}</span>
+                <span style="color:var(--text-muted); flex:none;">{{ r.n.toLocaleString() }} ({{ r.pct }}%)</span>
+              </div>
+              <div class="share-track" style="height:6px; margin-top:4px;"><div class="share-fill" :style="{ width: r.pct + '%' }"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:16px 18px;">
+          <h2 style="margin-top:0;">Recent redirects</h2>
+          <div class="table-scroll" style="max-height:320px;">
+            <table>
+              <thead><tr><th>Time</th><th>Requested URL</th><th>Redirected to</th><th>Client</th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredRedirects.length"><td colspan="4" class="empty">No redirects in this range.</td></tr>
+                <tr v-for="(e, i) in filteredRedirects.slice(0, 50)" :key="i">
+                  <td>{{ e.timestamp.replace('T', ' ').slice(0, 19) }}</td>
+                  <td class="url" :title="e.url || ''">{{ e.url || '' }}</td>
+                  <td class="url" :title="e.redirectTo || ''">{{ e.redirectTo || '' }}</td>
+                  <td>{{ friendlyAgent(e.userAgent) || e.userAgent || '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     </main>
 
     <div id="tooltip" role="tooltip" :class="{ show: tooltip.show }" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
       <div class="tt-label">{{ tooltip.label }}</div>
       <div class="tt-value">{{ tooltip.value }}</div>
     </div>
+    <div id="help-tooltip" role="tooltip" :class="{ show: helpTip.show }" :style="{ left: helpTip.x + 'px', top: helpTip.y + 'px' }">{{ helpTip.text }}</div>
   </div>
 
 <script src="https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js"></script>
@@ -832,9 +974,11 @@ createApp({
     const durationBucketBoundaries = ref([]);
     const rawErrors = ref([]);
     const rawSoftErrors = ref([]);
+    const rawRedirects = ref([]);
     const rawLive = ref([]);
     const rawDuplicates = ref([]);
     const rawRoutePatterns = ref([]);
+    const rawCacheStats = ref([]);
     const retentionDays = ref(30);
     const rangeDays = ref(1);
     const domainFilter = ref('');
@@ -844,7 +988,40 @@ createApp({
     const showDailyTable = ref(false);
     const crawlerPatterns = ref([]);
     const tooltip = reactive({ show: false, x: 0, y: 0, label: '', value: '' });
-    const activeTab = ref('overview'); // overview | live | traffic | errors
+    const helpTip = reactive({ show: false, x: 0, y: 0, text: '' });
+    const botHelp = {
+      bot: 'Sorted by total requests, highest first.',
+      share: "This bot's total requests as a share of all renders (bot + human) in range.",
+      errors: 'Hard render errors from this bot.',
+      soft: 'Soft 404s (render succeeded but returned nothing) from this bot.',
+      rate: 'Errors ÷ total requests from this bot. Highlighted amber at ≥20%, red at ≥40%.',
+      signal: 'Throttle candidate: fail rate ≥40% with ≥20 requests. Cache route candidate: this bot alone is ≥15% of all renders in range.',
+    };
+    const budgetHelp = {
+      avgQueueWait: 'Average wait for a free render slot before starting, across renders in range — from a running sum/count per day+domain, not per-request samples.',
+      avgRenderTime: 'Average time actually rendering (navigation + capture), same sum/count averaging as queue wait.',
+      p95QueueWait: 'Estimated from a bucketed histogram, so it\'s accurate to the nearest bucket edge, not an exact percentile. Rows recorded before bucketing existed don\'t contribute.',
+      p95RenderTime: 'Same bucketed-histogram estimate as p95 queue wait, for render duration instead.',
+    };
+    const liveHelp = {
+      totalRendering: 'Sum of activeRenders across all reporting instances, right now — not scoped to the date range/filters above.',
+      totalQueued: 'Sum of queued entries across all reporting instances, right now.',
+      oldestQueuedWait: 'Highest elapsedMs among entries currently queued (not yet rendering), right now. Warning above 15s, critical above 60s.',
+      saturated: `An instance is "saturated" when its active render count reaches the concurrency cap (${MAX_CONCURRENT_RENDERS} slots).`,
+    };
+    const errorsHelp = {
+      failuresInRange: 'error + soft_error counts from the aggregate totals for this range/domain/filter combination.',
+      distinctSignatures: 'Distinct signatures within the current sample (last ~200 error events) after collapsing URLs and numbers — not the full range total.',
+      restarts: 'MTBF estimate = range length ÷ restart count, shown below as the sub-label. Undefined (\'none in range\') when there were zero restarts.',
+      probes: 'Error/soft-404 URLs in the current sample (last ~200 events) whose path matches a known credential/dotfile pattern (.env, .git/, wp-admin, id_rsa, etc.) — a fixed heuristic list, not a general WAF.',
+      redirects: 'Requests matching MISSING_DATABASE_SEGMENT_RE (renderer.js) got a 301 to the /database/... path instead of a full render. Counted from the current sample (last ~200 redirect events), not the full range total. Kept out of the error/success counts entirely — a redirect isn\'t a failure. Watch the table below for anything that looks like a false-positive match or a redirect loop.',
+    };
+    const groupedHelp = {
+      signature: 'Type + normalized error message (URLs → <url>, numbers ≥4 digits → <n>) so repeats of the same failure group together instead of counting ~200 near-duplicates separately.',
+      count: 'Occurrences of this exact signature within the current error sample (last ~200 error events) — not the full range total.',
+      topClient: "Most frequent User-Agent (after friendly-name matching) among this signature's occurrences in the sample.",
+    };
+    const activeTab = ref('overview'); // overview | live | traffic | caching | errors | redirects
 
     function classifyUA(ua) {
       if (!ua || ua === 'unknown') return null;
@@ -948,6 +1125,31 @@ createApp({
     const softErrorSample = computed(() => rawSoftErrors.value.filter(withinRange));
     const filteredSoftErrors = computed(() => softErrorSample.value.slice(0, 50));
 
+    // Deliberately not reusing withinRange — a redirect isn't part of the
+    // success/error/restart/soft_error taxonomy, so gating it on the status filter
+    // buttons (statusOf() would default it to "error") would be misleading. Scoped to
+    // date range + domain only.
+    const filteredRedirects = computed(() => {
+      const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
+      return rawRedirects.value.filter((e) => (
+        e.timestamp.slice(0, 10) >= cutoffVal && e.timestamp.slice(0, 10) <= nowDay
+        && (!domainFilter.value || e.domain === domainFilter.value)
+      ));
+    });
+
+    const redirectBotRows = computed(() => {
+      const counts = {};
+      filteredRedirects.value.forEach((e) => {
+        const label = friendlyAgent(e.userAgent) || e.userAgent || 'unknown';
+        counts[label] = (counts[label] || 0) + 1;
+      });
+      const total = filteredRedirects.value.length;
+      return Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([bot, n]) => ({ bot, n, pct: total ? ((n / total) * 100).toFixed(1) : '0.0' }));
+    });
+
     // Live activity has no date dimension — it's whatever's happening right now across
     // render replicas, independent of the date-range/asOf filters used everywhere else.
     const liveInstances = computed(() => rawLive.value.map((i) => ({
@@ -972,6 +1174,7 @@ createApp({
       saturated: i.activeRenders >= MAX_CONCURRENT_RENDERS,
       rssMB: i.rssMB,
       openPages: i.openPages,
+      networkResponseCacheEntries: i.networkResponseCacheEntries,
     })));
     const oldestQueuedMs = computed(() => Math.max(0, ...liveEntries.value.filter((e) => e.status !== 'inflight').map((e) => e.elapsedMs)));
     const duplicateQueuedCount = computed(() => {
@@ -1042,14 +1245,14 @@ createApp({
       const botPct = grandTotal ? (botTotal / grandTotal) * 100 : null;
 
       return [
-        { label: 'Successful renders', value: formatCompact(byStatus.success), cls: '', spark: sparkline(days.map((d) => d.success), STATUS.success.fill) },
-        { label: 'Render errors', value: formatCompact(byStatus.error), cls: '', spark: sparkline(days.map((d) => d.error), STATUS.error.fill) },
-        { label: 'Soft errors', value: formatCompact(byStatus.soft_error), cls: '', spark: sparkline(days.map((d) => d.soft_error), STATUS.soft_error.fill) },
-        { label: 'Browser restarts', value: formatCompact(byStatus.restart), cls: byStatus.restart > 0 ? 'warning' : '', spark: sparkline(days.map((d) => d.restart), STATUS.restart.fill) },
-        { label: 'Success rate', value: rate === null ? '–' : rate.toFixed(1) + '%', cls: rateCls, spark: null },
-        { label: 'Bot traffic', value: botPct === null ? '–' : botPct.toFixed(1) + '%', cls: '', spark: null },
-        { label: 'Avg render time', value: formatMsAsSeconds(durationAverages.value.renderDurationMs), cls: '', spark: null },
-        { label: 'Avg queue wait', value: formatMsAsSeconds(durationAverages.value.queueWaitMs), cls: durationAverages.value.queueWaitMs > 5000 ? 'warning' : '', spark: null },
+        { label: 'Successful renders', value: formatCompact(byStatus.success), cls: '', spark: sparkline(days.map((d) => d.success), STATUS.success.fill), hint: 'Count of render_success events in range, after the domain/status/traffic filters above.' },
+        { label: 'Render errors', value: formatCompact(byStatus.error), cls: '', spark: sparkline(days.map((d) => d.error), STATUS.error.fill), hint: 'Count of hard render_error events in range (crash, navigation failure, timeout) — excludes soft 404s.' },
+        { label: 'Soft errors', value: formatCompact(byStatus.soft_error), cls: '', spark: sparkline(days.map((d) => d.soft_error), STATUS.soft_error.fill), hint: 'Count of soft_404 events in range — the render succeeded but the page came back empty or not-found.' },
+        { label: 'Browser restarts', value: formatCompact(byStatus.restart), cls: byStatus.restart > 0 ? 'warning' : '', spark: sparkline(days.map((d) => d.restart), STATUS.restart.fill), hint: 'Count of browser_restart events in range — the render browser process was relaunched.' },
+        { label: 'Success rate', value: rate === null ? '–' : rate.toFixed(1) + '%', cls: rateCls, spark: null, hint: 'success ÷ (success + error) × 100. Soft errors and restarts are not in this denominator. Good ≥98%, warning ≥90%, else critical.' },
+        { label: 'Bot traffic', value: botPct === null ? '–' : botPct.toFixed(1) + '%', cls: '', spark: null, hint: 'Requests with a bot-classified User-Agent ÷ all requests × 100. A UA counts as bot when it matches the vendored crawler list or a bot-like fallback pattern — see the Traffic tab for the full breakdown.' },
+        { label: 'Avg render time', value: formatMsAsSeconds(durationAverages.value.renderDurationMs), cls: '', spark: null, hint: 'Average render duration across renders in range — from a running sum/count per day+domain, not per-request samples.' },
+        { label: 'Avg queue wait', value: formatMsAsSeconds(durationAverages.value.queueWaitMs), cls: durationAverages.value.queueWaitMs > 5000 ? 'warning' : '', spark: null, hint: 'Average time a render waited for a free slot before starting, same sum/count averaging as render time. Amber above 5s.' },
       ];
     });
 
@@ -1068,6 +1271,7 @@ createApp({
             tag: 'capacity',
             title: `Queue-bound: ${rb.queuePct}% of average wait is queue time`,
             body: `Renders spend more time waiting for a free slot than actually rendering. See the Live activity tab for current slot saturation — more capacity likely helps more than page-level optimization right now.`,
+            hint: 'Triggers when average queue wait is ≥50% of average total wait (queue + render), computed from renders in range.',
           });
         }
       }
@@ -1078,6 +1282,7 @@ createApp({
           tag: 'traffic mix',
           title: `${top.bot} is ${((top.total / grandTotal) * 100).toFixed(1)}% of all traffic`,
           body: `${top.total.toLocaleString()} of ${grandTotal.toLocaleString()} renders in range came from one agent. A per-agent concurrency cap or a longer cache TTL on its routes would cut load without touching page code.`,
+          hint: 'Triggers when the single highest-volume bot accounts for ≥25% of all renders (bot + human) in range.',
         });
       }
 
@@ -1086,6 +1291,7 @@ createApp({
           tag: 'quality',
           title: `${((byStatus.soft_error / grandTotal) * 100).toFixed(1)}% of renders return nothing`,
           body: `${byStatus.soft_error.toLocaleString()} soft 404s in range. See the Errors tab for a breakdown by likely cause.`,
+          hint: 'Triggers when soft 404s are ≥5% of all renders (bot + human) in range.',
         });
       }
 
@@ -1095,6 +1301,7 @@ createApp({
           tag: 'reliability',
           title: `${worstBot.bot} fails ${((worstBot.error / worstBot.total) * 100).toFixed(1)}% of the time`,
           body: `Based on ${worstBot.total.toLocaleString()} requests from this agent in range. Worth a shorter navigation timeout or serving cache/503 instead of queueing it.`,
+          hint: 'Triggers for the bot with ≥20 requests and the highest error rate, when that rate is ≥35%. Ranked by error rate, not by volume — check "Crawlers by volume" for where it sits in the full list.',
         });
       }
 
@@ -1218,10 +1425,10 @@ createApp({
       const aiSharePct = grandTotal ? (aiTotal / grandTotal) * 100 : null;
       const dup = duplicateStats.value;
       return [
-        { label: 'Human traffic', value: humanPct === null ? '–' : humanPct.toFixed(1) + '%', sub: `of ${grandTotal.toLocaleString()} renders in range` },
-        { label: 'Top-agent concentration', value: topSharePct === null ? '–' : topSharePct.toFixed(1) + '%', sub: top ? top.bot : 'no bot traffic yet' },
-        { label: 'AI crawler share', value: aiSharePct === null ? '–' : aiSharePct.toFixed(1) + '%', sub: 'heuristic match on known AI-agent names, not the vendored list' },
-        { label: 'Duplicate renders', value: dup.pct === null ? '–' : dup.pct.toFixed(1) + '%', sub: dup.totalRenders ? `${dup.duplicateRenders.toLocaleString()} of ${dup.totalRenders.toLocaleString()} successful renders repeated the same URL same day` : 'no successful renders in range yet' },
+        { label: 'Human traffic', value: humanPct === null ? '–' : humanPct.toFixed(1) + '%', sub: `of ${grandTotal.toLocaleString()} renders in range`, hint: '(grandTotal − botTotal) ÷ grandTotal × 100 — everything not matched as a bot User-Agent counts as human.' },
+        { label: 'Top-agent concentration', value: topSharePct === null ? '–' : topSharePct.toFixed(1) + '%', sub: top ? top.bot : 'no bot traffic yet', hint: "The single highest-volume bot's total ÷ grandTotal × 100 — the same figure the \"traffic mix\" diagnosis card checks against its 25% threshold." },
+        { label: 'AI crawler share', value: aiSharePct === null ? '–' : aiSharePct.toFixed(1) + '%', sub: 'heuristic match on known AI-agent names, not the vendored list', hint: 'Sum of bot rows whose label matches a known AI-agent name pattern (gpt, claude, anthropic, perplexity, openai, meta-external*, meta-webindexer, bytespider, ccbot), ÷ grandTotal × 100.' },
+        { label: 'Duplicate renders', value: dup.pct === null ? '–' : dup.pct.toFixed(1) + '%', sub: dup.totalRenders ? `${dup.duplicateRenders.toLocaleString()} of ${dup.totalRenders.toLocaleString()} successful renders repeated the same URL same day` : 'no successful renders in range yet', hint: 'duplicateRenders ÷ totalRenders × 100, where a duplicate is the same URL rendered more than once on the same day. Tracked separately since the duplicate-tracking rollout — days before that have no rows here, not zero.' },
       ];
     });
 
@@ -1239,6 +1446,53 @@ createApp({
       const max = Math.max(1, ...rows.map((r) => r.n));
       return rows.map((r) => ({ ...r, widthPct: (r.n / max) * 100 }));
     });
+
+    const cacheStatsSummary = computed(() => {
+      const cutoffVal = cutoff.value;
+      const nowDay = isoDay(new Date(NOW_MS));
+      const totals = {};
+      rawCacheStats.value
+        .filter((r) => r.date >= cutoffVal && r.date <= nowDay && (!domainFilter.value || r.domain === domainFilter.value))
+        .forEach((r) => {
+          totals[r.cacheName] = totals[r.cacheName] || {};
+          totals[r.cacheName][r.outcome] = (totals[r.cacheName][r.outcome] || 0) + r.n;
+        });
+
+      // One row per cache name (thesaurus/countries/jsdelivr — see CACHEABLE_ENTRIES in
+      // renderer.js) rather than one pooled number — a jsdelivr URL (30-day TTL, a
+      // handful of URLs) and a thesaurus lookup (7-day TTL, high cardinality) have very
+      // different hit-rate profiles that a blended figure would hide.
+      const apiCacheRows = Object.keys(totals)
+        .filter((name) => name !== 'nginx_edge')
+        .map((name) => {
+          const c = totals[name];
+          const total = (c.hit || 0) + (c.miss || 0);
+          return {
+            name,
+            hits: c.hit || 0,
+            misses: c.miss || 0,
+            hitRate: total ? (c.hit / total) * 100 : null,
+          };
+        })
+        .sort((a, b) => (b.hits + b.misses) - (a.hits + a.misses));
+
+      const edge = totals.nginx_edge || {};
+      const edgeTotal = Object.values(edge).reduce((sum, n) => sum + n, 0);
+      const edgeRows = Object.entries(edge)
+        .sort((a, b) => b[1] - a[1])
+        .map(([outcome, n]) => ({ outcome, n, pct: edgeTotal ? ((n / edgeTotal) * 100).toFixed(1) : '0.0' }));
+
+      return {
+        apiCacheRows,
+        edgeRows,
+        edgeTotal,
+      };
+    });
+
+    const cacheHelp = {
+      thesaurus: 'renderer.js caches slow-changing responses in-process, per cache name: thesaurus/countries API lookups (7-day TTL, since this reference data hardly ever changes) and jsdelivr CDN libs (30-day TTL, since versioned CDN URLs are effectively immutable). Hit rate = hits ÷ (hits + misses) across renders in range, per name.',
+      edge: 'The nginx reverse proxy caches whole rendered pages for 7 days. A cache HIT is served by nginx directly and never reaches this service, so this can only show why the renders that DID reach us bypassed the edge cache (MISS, EXPIRED TTL, BYPASS flag, etc.) — not an overall hit rate.',
+    };
 
     const failuresInRange = computed(() => aggregates.value.byStatus.error + aggregates.value.byStatus.soft_error);
 
@@ -1307,6 +1561,16 @@ createApp({
     }
     function hideTip() { tooltip.show = false; }
 
+    function showHelp(evt, text) {
+      if (!text) return;
+      const rect = evt.currentTarget.getBoundingClientRect();
+      helpTip.x = rect.left;
+      helpTip.y = rect.bottom + 6;
+      helpTip.text = text;
+      helpTip.show = true;
+    }
+    function hideHelp() { helpTip.show = false; }
+
     async function loadCrawlerPatterns() {
       try {
         const res = await fetch('/crawler-user-agents.json');
@@ -1326,8 +1590,10 @@ createApp({
       durationBucketBoundaries.value = data.durationBucketBoundaries || [];
       rawErrors.value = data.recentErrors || [];
       rawSoftErrors.value = data.recentSoftErrors || [];
+      rawRedirects.value = data.recentRedirects || [];
       rawDuplicates.value = data.duplicates || [];
       rawRoutePatterns.value = data.routePatterns || [];
+      rawCacheStats.value = data.cacheStats || [];
       retentionDays.value = data.retentionDays;
     }
 
@@ -1355,11 +1621,12 @@ createApp({
       STATUS, STATUS_KEYS, RANGE_OPTIONS, MAX_CONCURRENT_RENDERS,
       rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable, activeTab,
       retentionDays, domains, kpis, insights, dailyTableRows, dailyChart, domainRows, domainBarVM,
-      botRows, filteredSoftErrors, errorGroups, distinctSignatureCount, mtbfLabel,
+      botRows, filteredSoftErrors, filteredRedirects, redirectBotRows, errorGroups, distinctSignatureCount, mtbfLabel,
       probeHits, probeIpCount, softCauses, trafficKpis, renderBudget, routePatternRows, failuresInRange, aggregates,
+      cacheStatsSummary, cacheHelp,
       liveInstances, liveEntries, totalRendering, totalQueued, instanceCards, oldestQueuedMs, duplicateQueuedCount, estimatedDrainSeconds,
-      tooltip,
-      rangeLabel, toggleStatus, resetStatus, showTip, hideTip, statusOf, friendlyAgent, badgeIcon,
+      tooltip, helpTip, botHelp, budgetHelp, liveHelp, errorsHelp, groupedHelp,
+      rangeLabel, toggleStatus, resetStatus, showTip, hideTip, showHelp, hideHelp, statusOf, friendlyAgent, badgeIcon,
       formatCompact, formatMsAsSeconds,
     };
   },
