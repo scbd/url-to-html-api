@@ -15,6 +15,7 @@ const {
     COUNTRIES_SUFFIX_RE,
     REPEATED_PATH_SEGMENT_RE,
     detectSoftNotFound,
+    matchLegacyQueryRecord,
 } = require('./legacyUrlPatterns');
 const { networkResponseCache, matchCacheableEntry, saveNetworkResponseCache } = require('./networkResponseCache');
 const { reportEvent, isKnownSoftNotFoundUrl } = require('./statsReporter');
@@ -54,6 +55,14 @@ async function renderUrl (req, res){
             const correctedPath = htmlUrl.pathname.replace(STRAY_BRACE_TYPE_SEGMENT_RE, '$1$2$3');
             const redirectUrl = `${htmlUrl.origin}${correctedPath}${htmlUrl.search}`;
             log(`Legacy URL with stray "}" after type segment, redirecting ${clientUrl} -> ${redirectUrl}`);
+            reportEvent('legacy_url_redirect', { url: clientUrl, domain: htmlUrl.hostname, redirectTo: redirectUrl, ...requesterInfo(req) });
+            return res.redirect(301, redirectUrl);
+        }
+
+        const legacyQueryRecordPath = matchLegacyQueryRecord(htmlUrl.pathname, htmlUrl.searchParams);
+        if(legacyQueryRecordPath){
+            const redirectUrl = `${htmlUrl.origin}${legacyQueryRecordPath}`;
+            log(`Legacy query-string record lookup, redirecting ${clientUrl} -> ${redirectUrl}`);
             reportEvent('legacy_url_redirect', { url: clientUrl, domain: htmlUrl.hostname, redirectTo: redirectUrl, ...requesterInfo(req) });
             return res.redirect(301, redirectUrl);
         }

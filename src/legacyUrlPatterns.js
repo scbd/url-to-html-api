@@ -42,6 +42,33 @@ const MISSING_DATABASE_SEGMENT_RE = [
 // up a render slot that would otherwise sit on a URL shape that's already known-bad.
 const STRAY_BRACE_TYPE_SEGMENT_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?database\/)([a-z]{2,4})\}(\/[a-z]{3,6}(?:-trg)?-\2-[a-z]{2,4}-\d+(?:-\d{1,3})?)$/i;
 
+// Legacy `/database/record.shtml?documentid=<id>` query-string lookup (pre-Angular
+// BCH). Confirmed live (curl -L): the origin's own record.shtml script 302s this
+// straight to /database/<id> — no type segment, it resolves the type from the id
+// server-side — then a second hop adds the language prefix if one was missing.
+// Redirecting to that same type-less shape here, rather than rendering record.shtml
+// itself, avoids spending a render + 2 redirect hops on a URL that never has content
+// of its own. Query key matched case-insensitively since bots send both
+// "documentid" and "documentID".
+const LEGACY_QUERY_RECORD_RE = /^(\/(?:(?:ar|zh|en|fr|ru|es)\/)?)database\/record\.shtml$/i;
+
+function matchLegacyQueryRecord(pathname, searchParams){
+    const match = pathname.match(LEGACY_QUERY_RECORD_RE);
+    if(!match) return null;
+
+    let documentId;
+    for(const [key, value] of searchParams){
+        if(/^documentid$/i.test(key)){
+            documentId = value;
+            break;
+        }
+    }
+    if(!documentId || !/^\d+$/.test(documentId)) return null;
+
+    const [, lang] = match;
+    return `${lang}database/${documentId}`;
+}
+
 // Scanners probing for leaked credentials/secrets — SSH keys, cloud config, .env
 // dumps (e.g. /.ssh/id_rsa, /s3/.aws/credentials, /.supabase/.env), plus known
 // scanned filenames outside a dotdir (/rclone.conf), plus path-traversal attempts
@@ -86,4 +113,5 @@ module.exports = {
     COUNTRIES_SUFFIX_RE,
     REPEATED_PATH_SEGMENT_RE,
     detectSoftNotFound,
+    matchLegacyQueryRecord,
 };
