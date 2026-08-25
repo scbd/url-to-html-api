@@ -12,8 +12,12 @@ function yesterday() {
   return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-function summarizeDay(day) {
-  const counts = store.readCounts()[day] || {};
+// The hour that just completed, e.g. run at 14:00 UTC -> "2026-08-21T13".
+function lastCompleteHour() {
+  return new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 13);
+}
+
+function summarizeCounts(counts) {
   const totals = { success: 0, error: 0, restart: 0, soft_error: 0 };
   const byDomain = {};
   let botTotal = 0;
@@ -35,11 +39,18 @@ function summarizeDay(day) {
 
   const topDomains = Object.entries(byDomain).sort((a, b) => b[1] - a[1]).slice(0, 3);
 
-  return { day, totals, topDomains, botTotal, grandTotal };
+  return { totals, topDomains, botTotal, grandTotal };
 }
 
-function formatMessage(summary) {
-  const { day, totals, topDomains, botTotal, grandTotal } = summary;
+function summarizeDay(day) {
+  return { day, ...summarizeCounts(store.readCounts()[day] || {}) };
+}
+
+function summarizeHour(hour) {
+  return { hour, ...summarizeCounts(store.readHourlyCounts()[hour] || {}) };
+}
+
+function statsBodyText({ totals, topDomains, botTotal, grandTotal }) {
   const renderTotal = totals.success + totals.error;
   const errorRate = renderTotal ? ((totals.error / renderTotal) * 100).toFixed(1) : '0.0';
   const botPct = grandTotal ? ((botTotal / grandTotal) * 100).toFixed(1) : '0.0';
@@ -47,14 +58,28 @@ function formatMessage(summary) {
     ? topDomains.map(([domain, n]) => `• ${domain}: ${n.toLocaleString()}`).join('\n')
     : '• No traffic';
 
-  const text = [
-    `*Prerender stats — ${day}*`,
+  return [
     `Successes: ${totals.success.toLocaleString()}  |  Errors: ${totals.error.toLocaleString()}  |  Soft errors: ${totals.soft_error.toLocaleString()}  |  Restarts: ${totals.restart.toLocaleString()}`,
     `Error rate: ${errorRate}%  |  Bot traffic: ${botPct}%`,
     'Top domains:',
     domainLines,
   ].join('\n');
+}
 
+function formatMessage(summary) {
+  const text = [`*Prerender stats — ${summary.day}*`, statsBodyText(summary)].join('\n');
+  return { text };
+}
+
+function hourLabel(hour) {
+  const day = hour.slice(0, 10);
+  const startHour = Number(hour.slice(11, 13));
+  const endHour = (startHour + 1) % 24;
+  return `${day} ${String(startHour).padStart(2, '0')}:00–${String(endHour).padStart(2, '0')}:00 UTC`;
+}
+
+function formatHourlyMessage(summary) {
+  const text = [`*Prerender stats (hourly) — ${hourLabel(summary.hour)}*`, statsBodyText(summary)].join('\n');
   return { text };
 }
 
@@ -88,6 +113,15 @@ const SNAPSHOT_SECTIONS = [
 ];
 const SECTION_TITLES = ['Overview & by domain', 'Crawlers by volume', 'Grouped failures & soft 404s'];
 
+// The hourly Slack report screenshots the standalone hourly-snapshot block on the
+// dashboard (see ASOF_HOUR_PARAM / #snap-hour-* in public/index.html) rather than the
+// day-range sections above — no tab click needed since it lives outside the tabs.
+const HOURLY_SNAPSHOT_SECTIONS = [
+  { tab: null, selector: '#snap-hour-1' },
+  { tab: null, selector: '#snap-hour-2' },
+];
+const HOURLY_SECTION_TITLES = ['Overview & top domains', 'Errors & soft 404s'];
+
 async function uploadOneFile(token, buffer, filename) {
   const { upload_url: uploadUrl, file_id: fileId } = await slackApi(
     'files.getUploadURLExternal', token, { filename, length: String(buffer.length) }
@@ -96,7 +130,7 @@ async function uploadOneFile(token, buffer, filename) {
   return fileId;
 }
 
-async function postSnapshotToSlack({ pngs, day, caption }) {
+async function postSnapshotToSlack({ pngs, day, caption, sectionTitles = SECTION_TITLES }) {
   const token = process.env.SLACK_BOT_TOKEN;
   const channelId = process.env.SLACK_CHANNEL_ID;
   if (!token || !channelId) throw new Error('SLACK_BOT_TOKEN or SLACK_CHANNEL_ID not set');
@@ -107,7 +141,7 @@ async function postSnapshotToSlack({ pngs, day, caption }) {
   }
 
   await slackApi('files.completeUploadExternal', token, {
-    files: fileIds.map((id, i) => ({ id, title: `Prerender stats — ${day} · ${SECTION_TITLES[i] || i + 1}` })),
+    files: fileIds.map((id, i) => ({ id, title: `Prerender stats — ${day} · ${sectionTitles[i] || i + 1}` })),
     channel_id: channelId,
     initial_comment: caption,
   }, true);
@@ -121,4 +155,15 @@ async function sendDailyReport(port) {
   await postSnapshotToSlack({ pngs, day, caption });
 }
 
-module.exports = { sendDailyReport, summarizeDay, formatMessage };
+async function sendHourlyReport(port) {
+  const hour = lastCompleteHour();
+  const summary = summarizeHour(hour);
+  const caption = formatHourlyMessage(summary).text;
+  const pngs = await screenshot.renderUrlSectionPngs(`http://localhost:${port}/?asOfHour=${hour}`, HOURLY_SNAPSHOT_SECTIONS);
+  await postSnapshotToSlack({ pngs, day: hour, caption, sectionTitles: HOURLY_SECTION_TITLES });
+}
+
+module.exports = {
+  sendDailyReport, summarizeDay, formatMessage,
+  sendHourlyReport, summarizeHour, formatHourlyMessage,
+};

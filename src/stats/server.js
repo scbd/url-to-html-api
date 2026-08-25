@@ -9,6 +9,7 @@ const slackReport = require('./slackReport');
 const PORT = Number(process.env.STATS_PORT) || 7200;
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 const SLACK_REPORT_HOUR_UTC = 8;
 
 const app = express();
@@ -24,6 +25,7 @@ app.post('/events', (req, res) => {
   // can show a recent list for rollout monitoring.
   if (event.type !== 'legacy_url_redirect' && event.type !== 'malformed_url_404' && event.type !== 'security_probe_404') {
     store.incrementCount(event.type, event.domain, client);
+    store.incrementHourlyCount(event.type, event.domain, client);
   }
   if (event.type !== 'render_success') {
     store.appendEvent(event);
@@ -107,25 +109,33 @@ app.get('/api/known-soft-404', (req, res) => {
 // under the generic key 'bot' rather than a specific bot name.
 const LEGACY_BOT_LABEL = 'Unclassified bot';
 
+// Shared by the day-bucketed counts.json rows and the single-hour hourlyCounts.json
+// rows below — same domain/type/client shape, just at different bucket granularity.
+function countsForDomains(domains) {
+  const rows = [];
+  Object.entries(domains).forEach(([domain, types]) => {
+    Object.entries(types).forEach(([type, byClient]) => {
+      if (typeof byClient === 'number') {
+        rows.push({ domain, type, bot: null, n: byClient });
+        return;
+      }
+      Object.entries(byClient).forEach(([client, n]) => {
+        let bot = null;
+        if (client === 'bot') bot = LEGACY_BOT_LABEL;
+        else if (client !== 'human') bot = client;
+        rows.push({ domain, type, bot, n });
+      });
+    });
+  });
+  return rows;
+}
+
 app.get('/api/stats', (req, res) => {
   const counts = store.readCounts();
   const rows = [];
 
   Object.entries(counts).forEach(([date, domains]) => {
-    Object.entries(domains).forEach(([domain, types]) => {
-      Object.entries(types).forEach(([type, byClient]) => {
-        if (typeof byClient === 'number') {
-          rows.push({ date, domain, type, bot: null, n: byClient });
-          return;
-        }
-        Object.entries(byClient).forEach(([client, n]) => {
-          let bot = null;
-          if (client === 'bot') bot = LEGACY_BOT_LABEL;
-          else if (client !== 'human') bot = client;
-          rows.push({ date, domain, type, bot, n });
-        });
-      });
-    });
+    countsForDomains(domains).forEach((r) => rows.push({ date, ...r }));
   });
 
   // Soft 404s are typically high-volume bot traffic; capping errors/restarts and
@@ -151,6 +161,21 @@ app.get('/api/stats', (req, res) => {
   // exactly the traffic that spoofs known-bot user agents. See SENSITIVE_PATH_RE in
   // renderer.js.
   const recentSecurityProbes = allEvents.filter((e) => e.type === 'security_probe_404').slice(-200).reverse();
+
+  // Feeds the standalone "Hourly snapshot" block the hourly Slack report screenshots
+  // (see slackReport.js sendHourlyReport) — independent of the asOf/day filtering
+  // above, since counts.json has no hour granularity to filter within.
+  let hourly = null;
+  if (req.query.asOfHour) {
+    const hour = req.query.asOfHour;
+    const hourEvents = store.readEvents().filter((e) => e.timestamp.slice(0, 13) === hour);
+    hourly = {
+      hour,
+      counts: countsForDomains(store.readHourlyCounts()[hour] || {}),
+      recentErrors: hourEvents.filter((e) => e.type !== 'soft_404' && e.type !== 'legacy_url_redirect' && e.type !== 'malformed_url_404' && e.type !== 'security_probe_404').slice(-50).reverse(),
+      recentSoftErrors: hourEvents.filter((e) => e.type === 'soft_404').slice(-50).reverse(),
+    };
+  }
 
   const durationRows = [];
   Object.entries(store.readDurations()).forEach(([date, domains]) => {
@@ -211,6 +236,7 @@ app.get('/api/stats', (req, res) => {
     recentMalformedUrls,
     recentSecurityProbes,
     knownSoft404UrlCount: store.countSoft404Urls(),
+    hourly,
   });
 });
 
@@ -223,6 +249,7 @@ app.listen(PORT, () => {
 setInterval(() => {
   const remaining = store.pruneOldEvents();
   store.pruneOldCounts();
+  store.pruneOldHourlyCounts();
   store.pruneOldDurations();
   store.pruneOldUrlSeen();
   store.pruneOldRoutePatterns();
@@ -240,8 +267,20 @@ function msUntilNextSlackReport() {
   return next - now;
 }
 
+function msUntilNextHour() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCMinutes(0, 0, 0);
+  next.setUTCHours(next.getUTCHours() + 1);
+  return next - now;
+}
+
 function runDailySlackReport() {
   slackReport.sendDailyReport(PORT).catch((err) => console.error('Failed to send Slack stats report', err));
+}
+
+function runHourlySlackReport() {
+  slackReport.sendHourlyReport(PORT).catch((err) => console.error('Failed to send hourly Slack stats report', err));
 }
 
 if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_CHANNEL_ID) {
@@ -250,9 +289,15 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_CHANNEL_ID) {
     setInterval(runDailySlackReport, DAY_MS);
   }, msUntilNextSlackReport());
 
+  setTimeout(() => {
+    runHourlySlackReport();
+    setInterval(runHourlySlackReport, HOUR_MS);
+  }, msUntilNextHour());
+
   if (process.env.SLACK_TEST_MODE === 'true') {
     const TEST_INTERVAL_MS = 60 * 60 * 1000;
     runDailySlackReport();
     setInterval(runDailySlackReport, TEST_INTERVAL_MS);
+    runHourlySlackReport();
   }
 }
