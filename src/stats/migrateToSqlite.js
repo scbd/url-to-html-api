@@ -17,19 +17,36 @@ function readJsonLegacy(filePath) {
   }
 }
 
-function readEventsJsonl(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (e) {
-        return null;
+// events.jsonl can be tens of MB (one line per non-render_success event, no retention
+// cap applied until pruneOldEvents runs) — readFileSync + split + map would hold the
+// raw text, the split line array, AND a fully-parsed object array in memory all at
+// once, easily multiplying a modest file size into a container-OOM-killing spike (this
+// is exactly what happened in production: a 48MB events.jsonl OOM-killed the 1024M-
+// limited stats container three times before this file ever got read to see why).
+// Reads in fixed-size byte chunks and only ever decodes one COMPLETE line at a time —
+// splitting on the raw newline byte before decoding UTF-8 avoids corrupting a multi-byte
+// character that happens to straddle a chunk boundary.
+function forEachJsonlLine(filePath, onLine) {
+  if (!fs.existsSync(filePath)) return;
+  const CHUNK_SIZE = 1024 * 1024;
+  const readBuf = Buffer.alloc(CHUNK_SIZE);
+  let pending = Buffer.alloc(0);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let bytesRead;
+    while ((bytesRead = fs.readSync(fd, readBuf, 0, CHUNK_SIZE, null)) > 0) {
+      pending = Buffer.concat([pending, readBuf.subarray(0, bytesRead)]);
+      let newlineIdx;
+      while ((newlineIdx = pending.indexOf(0x0a)) !== -1) {
+        const line = pending.subarray(0, newlineIdx).toString('utf8');
+        pending = pending.subarray(newlineIdx + 1);
+        if (line) onLine(line);
       }
-    })
-    .filter(Boolean);
+    }
+    if (pending.length) onLine(pending.toString('utf8'));
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // counts.json / hourlyCounts.json: {bucket: {domain: {type: byClient}}}, where byClient
@@ -147,13 +164,24 @@ function migrateSoft404Urls(db, legacyData) {
 
 // events.jsonl: one flat camelCase event object per line. render_success is never
 // expected here (appendEvent never wrote it), but skip defensively rather than assume.
-function migrateEvents(db, events) {
+// Streamed via forEachJsonlLine (see above) rather than reading the whole file — this
+// is by far the largest legacy file in practice and the one that OOM-killed the
+// migration in production before this fix.
+function migrateEvents(db, filePath) {
   const upsert = db.prepare(`
     INSERT INTO events (type, domain, url, ip, user_agent, referer, country, edge_cache_status, error, reason, redirect_to, queue_wait_ms, timestamp)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let rows = 0;
-  events.forEach((event) => {
+  let malformed = 0;
+  forEachJsonlLine(filePath, (line) => {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (e) {
+      malformed++;
+      return;
+    }
     if (event.type === 'render_success') return;
     upsert.run(
       event.type ?? null,
@@ -171,7 +199,9 @@ function migrateEvents(db, events) {
       event.timestamp ?? null
     );
     rows++;
+    if (rows % 50000 === 0) console.log(`migrateToSqlite: events.jsonl — ${rows} rows so far`);
   });
+  if (malformed) console.log(`migrateToSqlite: skipped ${malformed} malformed line(s) in events.jsonl`);
   return rows;
 }
 
@@ -185,18 +215,28 @@ function runMigration({ dataDir, dbPath }) {
   const tmpPath = `${dbPath}.tmp`;
   if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
 
+  console.log(`migrateToSqlite: starting, dataDir=${dataDir}`);
   const db = openDatabase(tmpPath);
   const counts = {};
   try {
     db.exec('BEGIN');
     counts.counts = migrateCounts(db, 'counts', 'day', readJsonLegacy(path.join(dataDir, 'counts.json')));
+    console.log(`migrateToSqlite: counts done (${counts.counts} rows)`);
     counts.hourlyCounts = migrateCounts(db, 'hourly_counts', 'hour', readJsonLegacy(path.join(dataDir, 'hourlyCounts.json')));
+    console.log(`migrateToSqlite: hourlyCounts done (${counts.hourlyCounts} rows)`);
     counts.durations = migrateDurations(db, readJsonLegacy(path.join(dataDir, 'durations.json')));
+    console.log(`migrateToSqlite: durations done (${counts.durations} rows)`);
     counts.urlSeen = migrateUrlSeen(db, readJsonLegacy(path.join(dataDir, 'urlSeen.json')));
+    console.log(`migrateToSqlite: urlSeen done (${counts.urlSeen} rows)`);
     counts.routePatterns = migrateRoutePatterns(db, readJsonLegacy(path.join(dataDir, 'routePatterns.json')));
+    console.log(`migrateToSqlite: routePatterns done (${counts.routePatterns} rows)`);
     counts.cacheStats = migrateCacheStats(db, readJsonLegacy(path.join(dataDir, 'cacheStats.json')));
+    console.log(`migrateToSqlite: cacheStats done (${counts.cacheStats} rows)`);
     counts.soft404Urls = migrateSoft404Urls(db, readJsonLegacy(path.join(dataDir, 'soft404Urls.json')));
-    counts.events = migrateEvents(db, readEventsJsonl(path.join(dataDir, 'events.jsonl')));
+    console.log(`migrateToSqlite: soft404Urls done (${counts.soft404Urls} rows)`);
+    counts.events = migrateEvents(db, path.join(dataDir, 'events.jsonl'));
+    console.log(`migrateToSqlite: events done (${counts.events} rows)`);
+    console.log('migrateToSqlite: committing transaction');
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
