@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "description": "url to html api ",
   "main": "src/index.js",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "deploy:stats": "bash deploy.sh false",
     "deploy:all": "bash deploy.sh true",
-    "nginx": "bash deploy-nginx.sh"
+    "nginx": "bash deploy-nginx.sh",
+    "migrate:stats": "node src/stats/migrateToSqlite.js"
   },
   "author": "",
   "license": "ISC",

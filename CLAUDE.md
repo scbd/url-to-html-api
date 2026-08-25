@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Puppeteer-based SSR/prerender service for CBD's Angular/Vue sites (bch, absch, chm, ort `*.cbd.int` domains, plus `*.cbddev.xyz`). Bots and crawlers get pointed at this service (via cloudfront) instead of the real SPA so they receive fully-rendered HTML. One Docker image runs two independent processes, selected by the container command:
 
 - **Render service** (`src/index.js`, default `CMD`) — Express API exposing `GET /api/render-html?url=<target>`, backed by a shared Puppeteer/Chrome instance.
-- **Stats service** (`src/stats/server.js`, run via `command: ["node", "src/stats/server.js"]` in the prerender compose stack) — collects render events from every render replica, persists them to flat JSON/JSONL files, and serves a dashboard.
+- **Stats service** (`src/stats/server.js`, run via `command: ["node", "src/stats/server.js"]` in the prerender compose stack) — collects render events from every render replica, persists them to SQLite, and serves a dashboard.
 
 ## Commands
 
@@ -35,7 +35,7 @@ curl "http://localhost:7100/api/render-html?url=https://absch.cbddev.xyz"
 
 ### Docker / CI / deploy
 
-- `Dockerfile` builds a single image (Node 20 + Google Chrome stable) that serves as both the render and stats service depending on the command it's started with.
+- `Dockerfile` builds a single image (Node 24 + Google Chrome stable) that serves as both the render and stats service depending on the command it's started with. The Node base image tag is pinned to an exact patch version (not a floating `node:24`), since this image gets rebuilt on every push.
 - `.circleci/config.yml` builds the image, runs it, curls `/api/render-html` as a smoke test, then pushes to Docker Hub (`scbd/url-to-html-api`) tagged by branch/release/tag depending on the workflow filter.
 - `stack/docker-compose-prerender.yml` — the Swarm stack: `urlToHtml` (3 replicas, the render service), `stats` (1 replica, manager-only, has the persistent `stats-data` volume), `manage` (Portainer).
 - `stack/docker-compose.yml` — the `proxy` stack: nginx (TLS termination + caching + proxy to `urlToHtml`) and certbot.
@@ -86,7 +86,9 @@ Soft-404 detection (`detectSoftNotFound`) matches known "not found" markup signa
 
 ### Stats service (`src/stats/`)
 
-A separate Express app, single Swarm replica, with its own flat-file store (`store.js`) under `data/` (or `STATS_DATA_DIR`) — counts, durations, per-URL "seen" tracking, route-pattern histograms, cache hit/miss stats, soft-404 URLs, and a raw recent-events log, all bucketed by day and pruned after `RETENTION_DAYS` (30). `server.js` exposes `/events` (ingest, called by every render replica), `/live-status` + `/api/live` (near-real-time per-instance render activity, in-memory only), `/api/known-soft-404` (the lookup gating the countries/repeated-segment redirect above), and `/api/stats` (the aggregated payload for the dashboard at `src/stats/public/`). `slackReport.js` posts a daily summary to Slack when `SLACK_BOT_TOKEN`/`SLACK_CHANNEL_ID` are set.
+A separate Express app, single Swarm replica, backed by a SQLite database (`stats.db` under `data/` or `STATS_DATA_DIR`, via the built-in `node:sqlite` module) — counts, hourly counts, durations, per-URL "seen" tracking, route-pattern histograms, cache hit/miss stats, and soft-404 URLs, all bucketed by day (or hour) and pruned after `RETENTION_DAYS` (30). `db.js` owns the schema (shared by `store.js` and `migrateToSqlite.js` so they can't drift); `store.js` exposes one prepared-statement function per read/write plus `withTransaction()` for batching a single incoming event's several store calls atomically. `server.js` exposes `/events` (ingest, called by every render replica — wraps its whole handler body in one `store.withTransaction()` call), `/live-status` + `/api/live` (near-real-time per-instance render activity, in-memory only), `/api/known-soft-404` (the lookup gating the countries/repeated-segment redirect above), and `/api/stats` (the aggregated payload for the dashboard at `src/stats/public/`, including a `hourly` block when `?asOfHour=` is passed). `slackReport.js` posts a daily summary and an hourly summary to Slack when `SLACK_BOT_TOKEN`/`SLACK_CHANNEL_ID` are set.
+
+**Migration from the old flat-JSON store**: `migrateToSqlite.js` runs automatically on boot (`server.js`, gated on `stats.db` not existing yet) to import any pre-existing `counts.json`/`events.jsonl`/etc. from before this migration — it builds the whole import in one transaction against a temp file, then atomically renames it into place, so a crash partway through never leaves a half-migrated `stats.db`. The original JSON/JSONL files are deliberately never deleted (cheap insurance against a rollback to the pre-SQLite `store.js`). Can also be run manually via `npm run migrate:stats`.
 
 ### Dead code
 

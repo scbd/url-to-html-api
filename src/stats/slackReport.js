@@ -17,24 +17,20 @@ function lastCompleteHour() {
   return new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 13);
 }
 
-function summarizeCounts(counts) {
+// `rows` are flat {domain, type, client, n} counts — the legacy plain-number/generic-
+// 'bot'-client data shapes are resolved once by migrateToSqlite.js, not handled here.
+function summarizeCounts(rows) {
   const totals = { success: 0, error: 0, restart: 0, soft_error: 0 };
   const byDomain = {};
   let botTotal = 0;
   let grandTotal = 0;
 
-  Object.entries(counts).forEach(([domain, types]) => {
-    Object.entries(types).forEach(([type, byClient]) => {
-      const status = statusOf(type);
-      // Pre-migration data stored this bucket as a plain number, all of it human traffic.
-      const clients = typeof byClient === 'number' ? { human: byClient } : byClient;
-      Object.entries(clients).forEach(([client, n]) => {
-        totals[status] += n;
-        grandTotal += n;
-        byDomain[domain] = (byDomain[domain] || 0) + n;
-        if (client !== 'human') botTotal += n;
-      });
-    });
+  rows.forEach(({ domain, type, client, n }) => {
+    const status = statusOf(type);
+    totals[status] += n;
+    grandTotal += n;
+    byDomain[domain] = (byDomain[domain] || 0) + n;
+    if (client !== 'human') botTotal += n;
   });
 
   const topDomains = Object.entries(byDomain).sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -43,11 +39,12 @@ function summarizeCounts(counts) {
 }
 
 function summarizeDay(day) {
-  return { day, ...summarizeCounts(store.readCounts()[day] || {}) };
+  const rows = store.readCounts().filter((r) => r.date === day);
+  return { day, ...summarizeCounts(rows) };
 }
 
 function summarizeHour(hour) {
-  return { hour, ...summarizeCounts(store.readHourlyCounts()[hour] || {}) };
+  return { hour, ...summarizeCounts(store.readHourlyCounts(hour)) };
 }
 
 function statsBodyText({ totals, topDomains, botTotal, grandTotal }) {

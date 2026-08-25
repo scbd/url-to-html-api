@@ -1,16 +1,29 @@
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
-const store = require('./store');
 const { classifyUserAgent } = require('./botDetect');
 const { normalizeRoute } = require('./routePattern');
 const slackReport = require('./slackReport');
+
+const { DATA_DIR, DB_PATH } = require('./db');
+const { runMigration } = require('./migrateToSqlite');
+
+// One-off JSON->SQLite migration, gated on stats.db not existing yet. Must run before
+// store.js is ever required — store.js opens DB_PATH as a module-load side effect and
+// assumes it's already in its final (migrated-or-fresh) state.
+if (!fs.existsSync(DB_PATH)) {
+  runMigration({ dataDir: DATA_DIR, dbPath: DB_PATH });
+}
+
+const store = require('./store');
 
 const PORT = Number(process.env.STATS_PORT) || 7200;
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const SLACK_REPORT_HOUR_UTC = 8;
+const BACKUP_PATH = path.join(DATA_DIR, 'stats.backup.db');
 
 const app = express();
 app.use(cors());
@@ -19,46 +32,56 @@ app.use(express.json({ limit: '100kb' }));
 app.post('/events', (req, res) => {
   const event = req.body || {};
   const client = classifyUserAgent(event.userAgent) || 'human';
-  // Kept out of incrementCount — statusOf() on the dashboard buckets any unrecognized
-  // type as "error", and a redirect/skipped-render is the opposite of a failure (it's
-  // a render we avoided). Still appended to the raw event log below so the dashboard
-  // can show a recent list for rollout monitoring.
-  if (event.type !== 'legacy_url_redirect' && event.type !== 'malformed_url_404' && event.type !== 'security_probe_404') {
-    store.incrementCount(event.type, event.domain, client);
-    store.incrementHourlyCount(event.type, event.domain, client);
-  }
-  if (event.type !== 'render_success') {
-    store.appendEvent(event);
-  }
-  if (event.type === 'soft_404' && event.url) {
-    store.recordSoft404Url(event.url);
-  }
-  if (typeof event.durationMs === 'number') {
-    store.recordDuration(event.domain, 'renderDurationMs', event.durationMs);
-  }
-  if (typeof event.queueWaitMs === 'number') {
-    store.recordDuration(event.domain, 'queueWaitMs', event.queueWaitMs);
-  }
-  // Per-name breakdown (thesaurus/countries/jsdelivr — see CACHEABLE_ENTRIES in
-  // renderer.js) rather than one pooled counter, so a jsdelivr URL's very different
-  // hit-rate profile doesn't get blended into the API-lookup numbers.
-  if (event.cacheCounts && typeof event.cacheCounts === 'object') {
-    Object.entries(event.cacheCounts).forEach(([name, counts]) => {
-      if (typeof counts.hit === 'number' && counts.hit) store.recordCacheCount(name, event.domain, 'hit', counts.hit);
-      if (typeof counts.miss === 'number' && counts.miss) store.recordCacheCount(name, event.domain, 'miss', counts.miss);
+  try {
+    // One event fans out into several store calls — batched in a single transaction so
+    // the update is atomic (no partial-apply if one call throws) and costs one WAL sync.
+    store.withTransaction(() => {
+      // Kept out of incrementCount — statusOf() on the dashboard buckets any unrecognized
+      // type as "error", and a redirect/skipped-render is the opposite of a failure (it's
+      // a render we avoided). Still appended to the raw event log below so the dashboard
+      // can show a recent list for rollout monitoring.
+      if (event.type !== 'legacy_url_redirect' && event.type !== 'malformed_url_404' && event.type !== 'security_probe_404') {
+        store.incrementCount(event.type, event.domain, client);
+        store.incrementHourlyCount(event.type, event.domain, client);
+      }
+      if (event.type !== 'render_success') {
+        store.appendEvent(event);
+      }
+      if (event.type === 'soft_404' && event.url) {
+        store.recordSoft404Url(event.url);
+      }
+      if (typeof event.durationMs === 'number') {
+        store.recordDuration(event.domain, 'renderDurationMs', event.durationMs);
+      }
+      if (typeof event.queueWaitMs === 'number') {
+        store.recordDuration(event.domain, 'queueWaitMs', event.queueWaitMs);
+      }
+      // Per-name breakdown (thesaurus/countries/jsdelivr — see CACHEABLE_ENTRIES in
+      // renderer.js) rather than one pooled counter, so a jsdelivr URL's very different
+      // hit-rate profile doesn't get blended into the API-lookup numbers.
+      if (event.cacheCounts && typeof event.cacheCounts === 'object') {
+        Object.entries(event.cacheCounts).forEach(([name, counts]) => {
+          if (typeof counts.hit === 'number' && counts.hit) store.recordCacheCount(name, event.domain, 'hit', counts.hit);
+          if (typeof counts.miss === 'number' && counts.miss) store.recordCacheCount(name, event.domain, 'miss', counts.miss);
+        });
+      }
+      // Only ever a MISS/EXPIRED/STALE/BYPASS/REVALIDATED/UPDATING value — a true cache HIT
+      // at the nginx edge never reaches this service in the first place, so "hit rate" isn't
+      // derivable from this alone. This is "of the renders we did, why did each bypass cache."
+      if (event.edgeCacheStatus) {
+        store.recordCacheCount('nginx_edge', event.domain, event.edgeCacheStatus.toLowerCase(), 1);
+      }
+      // Scoped to successful renders only — a failed render didn't actually produce cached
+      // output, so counting it as "duplicate work" or a "hot route" would overstate both.
+      if (event.type === 'render_success' && event.url) {
+        store.recordUrlSeen(event.domain, event.url);
+        store.incrementRoutePattern(event.domain, normalizeRoute(event.url));
+      }
     });
-  }
-  // Only ever a MISS/EXPIRED/STALE/BYPASS/REVALIDATED/UPDATING value — a true cache HIT
-  // at the nginx edge never reaches this service in the first place, so "hit rate" isn't
-  // derivable from this alone. This is "of the renders we did, why did each bypass cache."
-  if (event.edgeCacheStatus) {
-    store.recordCacheCount('nginx_edge', event.domain, event.edgeCacheStatus.toLowerCase(), 1);
-  }
-  // Scoped to successful renders only — a failed render didn't actually produce cached
-  // output, so counting it as "duplicate work" or a "hot route" would overstate both.
-  if (event.type === 'render_success' && event.url) {
-    store.recordUrlSeen(event.domain, event.url);
-    store.incrementRoutePattern(event.domain, normalizeRoute(event.url));
+  } catch (e) {
+    // Preserve the pre-SQLite contract: a stats-write problem never fails the caller
+    // (statsReporter.js treats this endpoint as fire-and-forget).
+    console.error('Failed to record stats event', e);
   }
   res.sendStatus(204);
 });
@@ -105,131 +128,62 @@ app.get('/api/known-soft-404', (req, res) => {
   res.json({ known: store.isKnownSoft404Url(req.query.url) });
 });
 
-// Pre-migration data (before per-bot-name tracking) stored this bucket's bot traffic
-// under the generic key 'bot' rather than a specific bot name.
-const LEGACY_BOT_LABEL = 'Unclassified bot';
-
-// Shared by the day-bucketed counts.json rows and the single-hour hourlyCounts.json
-// rows below — same domain/type/client shape, just at different bucket granularity.
-function countsForDomains(domains) {
-  const rows = [];
-  Object.entries(domains).forEach(([domain, types]) => {
-    Object.entries(types).forEach(([type, byClient]) => {
-      if (typeof byClient === 'number') {
-        rows.push({ domain, type, bot: null, n: byClient });
-        return;
-      }
-      Object.entries(byClient).forEach(([client, n]) => {
-        let bot = null;
-        if (client === 'bot') bot = LEGACY_BOT_LABEL;
-        else if (client !== 'human') bot = client;
-        rows.push({ domain, type, bot, n });
-      });
-    });
-  });
-  return rows;
+// The only remaining client/bot-label shaping needed at read time — the two legacy
+// data-shape shims (pre-per-client-tracking plain numbers, the generic 'bot' client
+// key) are resolved once by migrateToSqlite.js, not handled here, since all data at
+// rest is already clean after migration.
+function toBotField(client) {
+  return client === 'human' ? null : client;
 }
 
+// Soft 404s and other bot-driven event types are typically high-volume; capping each
+// type to its own "last N" window (rather than one shared cap across all events) keeps
+// a busy type from crowding the others out of the payload entirely. `asOf`/`asOfHour`
+// additionally scope the window to one specific day/hour.
+const ERROR_LIKE_EXCLUDE_TYPES = ['soft_404', 'legacy_url_redirect', 'malformed_url_404', 'security_probe_404'];
+
 app.get('/api/stats', (req, res) => {
-  const counts = store.readCounts();
-  const rows = [];
+  const rows = store.readCounts().map((r) => ({
+    date: r.date, domain: r.domain, type: r.type, n: r.n, bot: toBotField(r.client),
+  }));
 
-  Object.entries(counts).forEach(([date, domains]) => {
-    countsForDomains(domains).forEach((r) => rows.push({ date, ...r }));
-  });
-
-  // Soft 404s are typically high-volume bot traffic; capping errors/restarts and
-  // soft 404s to one shared "last 200" window lets soft 404s crowd real errors out
-  // of the payload entirely, so each type gets its own window instead.
-  // asOf additionally scopes the window to one specific day — without it, a busier
-  // later day can just as easily crowd an earlier day's errors out of a global cap.
-  let allEvents = store.readEvents();
-  if (req.query.asOf) {
-    allEvents = allEvents.filter((e) => e.timestamp.slice(0, 10) === req.query.asOf);
-  }
-  const recentErrors = allEvents.filter((e) => e.type !== 'soft_404' && e.type !== 'legacy_url_redirect' && e.type !== 'malformed_url_404' && e.type !== 'security_probe_404').slice(-200).reverse();
-  const recentSoftErrors = allEvents.filter((e) => e.type === 'soft_404').slice(-200).reverse();
+  const dayPrefix = req.query.asOf;
+  const recentErrors = store.readRecentEvents({ excludeTypes: ERROR_LIKE_EXCLUDE_TYPES, prefix: dayPrefix, limit: 200 });
+  const recentSoftErrors = store.readRecentEvents({ includeTypes: ['soft_404'], prefix: dayPrefix, limit: 200 });
   // Temporary rollout-monitoring list for the missing-/database/-segment redirect —
   // remove once that's confirmed clean. See MISSING_DATABASE_SEGMENT_RE in renderer.js.
-  const recentRedirects = allEvents.filter((e) => e.type === 'legacy_url_redirect').slice(-200).reverse();
+  const recentRedirects = store.readRecentEvents({ includeTypes: ['legacy_url_redirect'], prefix: dayPrefix, limit: 200 });
   // Bot-mangled URLs with a bot-appended /countries/<code> suffix (e.g.
   // .../register/countries/GM), short-circuited before rendering. See
   // COUNTRIES_SUFFIX_RE in renderer.js.
-  const recentMalformedUrls = allEvents.filter((e) => e.type === 'malformed_url_404').slice(-200).reverse();
+  const recentMalformedUrls = store.readRecentEvents({ includeTypes: ['malformed_url_404'], prefix: dayPrefix, limit: 200 });
   // Scanners probing for leaked credentials/secrets, short-circuited before
   // rendering. The claimed bot name (event.userAgent) is not to be trusted — this is
   // exactly the traffic that spoofs known-bot user agents. See SENSITIVE_PATH_RE in
   // renderer.js.
-  const recentSecurityProbes = allEvents.filter((e) => e.type === 'security_probe_404').slice(-200).reverse();
+  const recentSecurityProbes = store.readRecentEvents({ includeTypes: ['security_probe_404'], prefix: dayPrefix, limit: 200 });
 
   // Feeds the standalone "Hourly snapshot" block the hourly Slack report screenshots
-  // (see slackReport.js sendHourlyReport) — independent of the asOf/day filtering
-  // above, since counts.json has no hour granularity to filter within.
+  // (see slackReport.js sendHourlyReport) — independent of the asOf/day filtering above.
   let hourly = null;
   if (req.query.asOfHour) {
     const hour = req.query.asOfHour;
-    const hourEvents = store.readEvents().filter((e) => e.timestamp.slice(0, 13) === hour);
     hourly = {
       hour,
-      counts: countsForDomains(store.readHourlyCounts()[hour] || {}),
-      recentErrors: hourEvents.filter((e) => e.type !== 'soft_404' && e.type !== 'legacy_url_redirect' && e.type !== 'malformed_url_404' && e.type !== 'security_probe_404').slice(-50).reverse(),
-      recentSoftErrors: hourEvents.filter((e) => e.type === 'soft_404').slice(-50).reverse(),
+      counts: store.readHourlyCounts(hour).map((r) => ({ domain: r.domain, type: r.type, n: r.n, bot: toBotField(r.client) })),
+      recentErrors: store.readRecentEvents({ excludeTypes: ERROR_LIKE_EXCLUDE_TYPES, prefix: hour, limit: 50 }),
+      recentSoftErrors: store.readRecentEvents({ includeTypes: ['soft_404'], prefix: hour, limit: 50 }),
     };
   }
-
-  const durationRows = [];
-  Object.entries(store.readDurations()).forEach(([date, domains]) => {
-    Object.entries(domains).forEach(([domain, metrics]) => {
-      Object.entries(metrics).forEach(([metric, { sum, count, buckets }]) => {
-        durationRows.push({ date, domain, metric, sum, count, buckets: buckets || null });
-      });
-    });
-  });
-
-  // Aggregated server-side rather than shipping the raw per-URL/per-domain maps to the
-  // client — those can hold thousands of distinct URLs per day, far more than the
-  // handful of numbers the dashboard actually needs from them.
-  const duplicateRows = [];
-  Object.entries(store.readUrlSeen()).forEach(([date, domains]) => {
-    Object.entries(domains).forEach(([domain, urls]) => {
-      let totalRenders = 0;
-      let duplicateRenders = 0;
-      Object.values(urls).forEach((n) => {
-        totalRenders += n;
-        if (n > 1) duplicateRenders += n - 1;
-      });
-      duplicateRows.push({ date, domain, totalRenders, duplicateRenders });
-    });
-  });
-
-  const routePatternRows = [];
-  Object.entries(store.readRoutePatterns()).forEach(([date, domains]) => {
-    Object.entries(domains).forEach(([domain, patterns]) => {
-      Object.entries(patterns).forEach(([pattern, n]) => {
-        routePatternRows.push({ date, domain, pattern, n });
-      });
-    });
-  });
-
-  const cacheStatRows = [];
-  Object.entries(store.readCacheStats()).forEach(([date, domains]) => {
-    Object.entries(domains).forEach(([domain, caches]) => {
-      Object.entries(caches).forEach(([cacheName, outcomes]) => {
-        Object.entries(outcomes).forEach(([outcome, n]) => {
-          cacheStatRows.push({ date, domain, cacheName, outcome, n });
-        });
-      });
-    });
-  });
 
   res.json({
     retentionDays: store.RETENTION_DAYS,
     counts: rows,
-    durations: durationRows,
+    durations: store.readDurations(),
     durationBucketBoundaries: store.DURATION_BUCKETS_MS,
-    duplicates: duplicateRows,
-    routePatterns: routePatternRows,
-    cacheStats: cacheStatRows,
+    duplicates: store.readUrlSeenSummary(),
+    routePatterns: store.readRoutePatterns(),
+    cacheStats: store.readCacheStats(),
     recentErrors,
     recentSoftErrors,
     recentRedirects,
@@ -246,6 +200,13 @@ app.listen(PORT, () => {
   console.log(`Stats server listening on ${PORT}`);
 });
 
+// Swarm sends SIGTERM on every `docker service update --force` deploy — close cleanly
+// so the WAL gets checkpointed back into stats.db rather than left to replay next boot.
+process.on('SIGTERM', () => {
+  store.close();
+  process.exit(0);
+});
+
 setInterval(() => {
   const remaining = store.pruneOldEvents();
   store.pruneOldCounts();
@@ -256,6 +217,19 @@ setInterval(() => {
   store.pruneOldCacheStats();
   store.pruneOldSoft404Urls();
   console.log(`Pruned stats events, ${remaining} remaining`);
+
+  // Consistent point-in-time snapshot even while the live db is being written — no
+  // other backup mechanism exists for this data (a single-node Docker volume, no
+  // replication). Written to a temp path and renamed into place, same atomicity
+  // reasoning as everywhere else in this migration.
+  try {
+    const tmpBackupPath = `${BACKUP_PATH}.tmp`;
+    if (fs.existsSync(tmpBackupPath)) fs.unlinkSync(tmpBackupPath);
+    store.backupTo(tmpBackupPath);
+    fs.renameSync(tmpBackupPath, BACKUP_PATH);
+  } catch (e) {
+    console.error('Failed to back up stats db', e);
+  }
 }, PRUNE_INTERVAL_MS);
 
 function msUntilNextSlackReport() {

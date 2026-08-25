@@ -1,4 +1,7 @@
-﻿FROM --platform=linux/amd64 node:20.0
+﻿# Pinned to an exact patch version, not a floating `node:24` tag — this image gets
+# rebuilt on every push (deploy.sh), so a floating tag would silently change Node
+# versions on unrelated deploys. Bump deliberately, by hand, when needed.
+FROM --platform=linux/amd64 node:24.8.0-bookworm
 
 WORKDIR /usr/src/app
 

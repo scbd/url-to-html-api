@@ -1,122 +1,155 @@
-const fs = require('fs');
-const path = require('path');
+const { openDatabase, DB_PATH } = require('./db');
 
-const DATA_DIR = process.env.STATS_DATA_DIR || path.join(__dirname, '../../data');
-const EVENTS_FILE = path.join(DATA_DIR, 'events.jsonl');
-const COUNTS_FILE = path.join(DATA_DIR, 'counts.json');
-const HOURLY_COUNTS_FILE = path.join(DATA_DIR, 'hourlyCounts.json');
-const DURATIONS_FILE = path.join(DATA_DIR, 'durations.json');
-const URL_SEEN_FILE = path.join(DATA_DIR, 'urlSeen.json');
-const ROUTE_PATTERNS_FILE = path.join(DATA_DIR, 'routePatterns.json');
-const CACHE_STATS_FILE = path.join(DATA_DIR, 'cacheStats.json');
-const SOFT_404_URLS_FILE = path.join(DATA_DIR, 'soft404Urls.json');
 const RETENTION_DAYS = 30;
 // Only needed long enough for the hourly Slack report to summarize the hour that just
-// ended — unlike counts.json, nothing else reads this, so it's pruned much sooner.
+// ended — unlike counts, nothing else reads this, so it's pruned much sooner.
 const HOURLY_RETENTION_HOURS = 48;
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+// server.js runs the one-off JSON->SQLite migration (see migrateToSqlite.js) before
+// ever requiring this module, gated on stats.db not existing yet — by the time this
+// file is loaded, stats.db is guaranteed to already exist in a complete state.
+const db = openDatabase(DB_PATH);
 
-// A crash or restart mid-write (OOM kill, redeploy, host hiccup) could otherwise leave
-// one of these JSON stores truncated. Two defenses: writes go through a temp file +
-// atomic rename so a torn write can never reach the real path, and a read that still
-// finds invalid JSON (e.g. from before this existed) moves the bad file aside instead
-// of silently returning {} and letting the very next write overwrite it for good.
-function readJsonSafe(filePath) {
-  if (!fs.existsSync(filePath)) return {};
+function close() {
+  db.close();
+}
+
+// Wraps fn() in a single SQLite transaction — used by server.js's POST /events handler,
+// which fans one incoming event out into several store calls (appendEvent, incrementCount,
+// recordDuration, etc.). Batching them makes the whole update atomic instead of partially
+// applied if one call throws partway through, and costs one WAL sync instead of several.
+function withTransaction(fn) {
+  db.exec('BEGIN');
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
   } catch (e) {
-    const corruptPath = `${filePath}.corrupt`;
-    try {
-      fs.renameSync(filePath, corruptPath);
-      console.error(`Corrupt stats file, moved aside to ${corruptPath}:`, e);
-    } catch (renameErr) {
-      console.error(`Corrupt stats file at ${filePath} (failed to move aside)`, e, renameErr);
-    }
-    return {};
+    db.exec('ROLLBACK');
+    throw e;
   }
 }
 
-function writeJsonAtomic(filePath, data, label) {
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFile(tmpPath, JSON.stringify(data), (err) => {
-    if (err) return console.error(`Failed to write stats ${label}`, err);
-    fs.rename(tmpPath, filePath, (renameErr) => {
-      if (renameErr) console.error(`Failed to finalize stats ${label}`, renameErr);
-    });
-  });
+// ─── events ──────────────────────────────────────────────────────────────────
+
+const insertEvent = db.prepare(`
+  INSERT INTO events (type, domain, url, ip, user_agent, referer, country, edge_cache_status, error, reason, redirect_to, queue_wait_ms, timestamp)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+function appendEvent(event) {
+  const timestamp = new Date().toISOString();
+  insertEvent.run(
+    event.type ?? null,
+    event.domain ?? null,
+    event.url ?? null,
+    event.ip ?? null,
+    event.userAgent ?? null,
+    event.referer ?? null,
+    event.country ?? null,
+    event.edgeCacheStatus ?? null,
+    event.error ?? null,
+    event.reason ?? null,
+    event.redirectTo ?? null,
+    typeof event.queueWaitMs === 'number' ? event.queueWaitMs : null,
+    timestamp
+  );
 }
 
-function loadCounts() {
-  return readJsonSafe(COUNTS_FILE);
+function rowToEvent(row) {
+  return {
+    type: row.type,
+    domain: row.domain,
+    url: row.url,
+    ip: row.ip,
+    userAgent: row.user_agent,
+    referer: row.referer,
+    country: row.country,
+    edgeCacheStatus: row.edge_cache_status,
+    error: row.error,
+    reason: row.reason,
+    redirectTo: row.redirect_to,
+    queueWaitMs: row.queue_wait_ms,
+    timestamp: row.timestamp,
+  };
 }
 
-const counts = loadCounts();
-
-function saveCounts() {
-  writeJsonAtomic(COUNTS_FILE, counts, 'counts');
+// events scales with traffic volume (bot floods), not calendar days, so filtering
+// happens in SQL rather than reading the whole table into JS first — the actual
+// scaling risk this migration exists to fix. includeTypes/excludeTypes are mutually
+// exclusive; prefix matches a day (YYYY-MM-DD) or hour (YYYY-MM-DDTHH) timestamp prefix.
+function readRecentEvents({ includeTypes, excludeTypes, prefix, limit = 200 } = {}) {
+  const clauses = [];
+  const params = [];
+  if (includeTypes) {
+    clauses.push(`type IN (${includeTypes.map(() => '?').join(',')})`);
+    params.push(...includeTypes);
+  }
+  if (excludeTypes) {
+    clauses.push(`type NOT IN (${excludeTypes.map(() => '?').join(',')})`);
+    params.push(...excludeTypes);
+  }
+  if (prefix) {
+    clauses.push('timestamp LIKE ?');
+    params.push(`${prefix}%`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  params.push(limit);
+  const rows = db.prepare(`SELECT * FROM events ${where} ORDER BY id DESC LIMIT ?`).all(...params);
+  return rows.map(rowToEvent);
 }
+
+function pruneOldEvents() {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('DELETE FROM events WHERE timestamp < ?').run(cutoff);
+  return db.prepare('SELECT COUNT(*) AS c FROM events').get().c;
+}
+
+// ─── counts ──────────────────────────────────────────────────────────────────
+
+const upsertCount = db.prepare(`
+  INSERT INTO counts (day, domain, type, client, n) VALUES (?, ?, ?, ?, 1)
+  ON CONFLICT(day, domain, type, client) DO UPDATE SET n = n + 1
+`);
 
 function incrementCount(type, domain, client) {
   const day = new Date().toISOString().slice(0, 10);
-  const d = domain || 'unknown';
-  counts[day] = counts[day] || {};
-  counts[day][d] = counts[day][d] || {};
-  const existing = counts[day][d][type];
-  // Pre-migration data stored this bucket as a plain number; fold it in as human traffic.
-  const bucket = typeof existing === 'object' ? existing : (existing ? { human: existing } : {});
-  bucket[client] = (bucket[client] || 0) + 1;
-  counts[day][d][type] = bucket;
-  saveCounts();
+  upsertCount.run(day, domain || 'unknown', type, client);
 }
 
 function readCounts() {
-  return counts;
+  return db.prepare('SELECT day AS date, domain, type, client, n FROM counts').all();
 }
 
 function pruneOldCounts() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  Object.keys(counts).forEach((day) => {
-    if (day < cutoff) delete counts[day];
-  });
-  saveCounts();
+  db.prepare('DELETE FROM counts WHERE day < ?').run(cutoff);
 }
 
-function loadHourlyCounts() {
-  return readJsonSafe(HOURLY_COUNTS_FILE);
-}
+// ─── hourly counts ───────────────────────────────────────────────────────────
 
-const hourlyCounts = loadHourlyCounts();
+const upsertHourlyCount = db.prepare(`
+  INSERT INTO hourly_counts (hour, domain, type, client, n) VALUES (?, ?, ?, ?, 1)
+  ON CONFLICT(hour, domain, type, client) DO UPDATE SET n = n + 1
+`);
 
-function saveHourlyCounts() {
-  writeJsonAtomic(HOURLY_COUNTS_FILE, hourlyCounts, 'hourlyCounts');
-}
-
-// Same shape/logic as incrementCount, keyed by hour (YYYY-MM-DDTHH) instead of day —
-// feeds the hourly Slack report only, so it doesn't need counts.json's 30-day retention.
 function incrementHourlyCount(type, domain, client) {
   const hour = new Date().toISOString().slice(0, 13);
-  const d = domain || 'unknown';
-  hourlyCounts[hour] = hourlyCounts[hour] || {};
-  hourlyCounts[hour][d] = hourlyCounts[hour][d] || {};
-  const bucket = hourlyCounts[hour][d][type] || {};
-  bucket[client] = (bucket[client] || 0) + 1;
-  hourlyCounts[hour][d][type] = bucket;
-  saveHourlyCounts();
+  upsertHourlyCount.run(hour, domain || 'unknown', type, client);
 }
 
-function readHourlyCounts() {
-  return hourlyCounts;
+// Scoped to a single hour (the only way this is ever read) — feeds the hourly Slack
+// report / dashboard hourly-snapshot section only.
+function readHourlyCounts(hour) {
+  return db.prepare('SELECT domain, type, client, n FROM hourly_counts WHERE hour = ?').all(hour);
 }
 
 function pruneOldHourlyCounts() {
   const cutoff = new Date(Date.now() - HOURLY_RETENTION_HOURS * 60 * 60 * 1000).toISOString().slice(0, 13);
-  Object.keys(hourlyCounts).forEach((hour) => {
-    if (hour < cutoff) delete hourlyCounts[hour];
-  });
-  saveHourlyCounts();
+  db.prepare('DELETE FROM hourly_counts WHERE hour < ?').run(cutoff);
 }
+
+// ─── durations ───────────────────────────────────────────────────────────────
 
 // Upper bound (ms) of each latency bucket — a render/queue-wait falls in the first
 // bucket whose boundary is >= its duration. Fixed, coarse-grained boundaries rather
@@ -131,15 +164,14 @@ function durationBucketIndex(ms) {
   return DURATION_BUCKETS_MS.length - 1;
 }
 
-function loadDurations() {
-  return readJsonSafe(DURATIONS_FILE);
-}
-
-const durations = loadDurations();
-
-function saveDurations() {
-  writeJsonAtomic(DURATIONS_FILE, durations, 'durations');
-}
+const upsertDuration = db.prepare(`
+  INSERT INTO durations (day, domain, metric, sum, count) VALUES (?, ?, ?, ?, 1)
+  ON CONFLICT(day, domain, metric) DO UPDATE SET sum = sum + excluded.sum, count = count + 1
+`);
+const upsertDurationBucket = db.prepare(`
+  INSERT INTO duration_buckets (day, domain, metric, bucket_index, n) VALUES (?, ?, ?, ?, 1)
+  ON CONFLICT(day, domain, metric, bucket_index) DO UPDATE SET n = n + 1
+`);
 
 // Tracks a running sum+count per day/domain/metric so an average can be computed later,
 // without storing one record per render the way appendEvent's raw event log would. The
@@ -150,181 +182,133 @@ function recordDuration(domain, metric, ms) {
   if (typeof ms !== 'number') return;
   const day = new Date().toISOString().slice(0, 10);
   const d = domain || 'unknown';
-  durations[day] = durations[day] || {};
-  durations[day][d] = durations[day][d] || {};
-  const existing = durations[day][d][metric] || { sum: 0, count: 0, buckets: new Array(DURATION_BUCKETS_MS.length).fill(0) };
-  const buckets = existing.buckets || new Array(DURATION_BUCKETS_MS.length).fill(0);
-  buckets[durationBucketIndex(ms)] += 1;
-  durations[day][d][metric] = { sum: existing.sum + ms, count: existing.count + 1, buckets };
-  saveDurations();
+  upsertDuration.run(day, d, metric, ms);
+  upsertDurationBucket.run(day, d, metric, durationBucketIndex(ms));
 }
 
 function readDurations() {
-  return durations;
+  const base = db.prepare('SELECT day AS date, domain, metric, sum, count FROM durations').all();
+  const bucketRows = db.prepare('SELECT day AS date, domain, metric, bucket_index, n FROM duration_buckets').all();
+  const bucketsByKey = new Map();
+  bucketRows.forEach((r) => {
+    const key = `${r.date}|${r.domain}|${r.metric}`;
+    const arr = bucketsByKey.get(key) || new Array(DURATION_BUCKETS_MS.length).fill(0);
+    arr[r.bucket_index] = r.n;
+    bucketsByKey.set(key, arr);
+  });
+  return base.map((r) => ({
+    date: r.date,
+    domain: r.domain,
+    metric: r.metric,
+    sum: r.sum,
+    count: r.count,
+    buckets: bucketsByKey.get(`${r.date}|${r.domain}|${r.metric}`) || null,
+  }));
 }
 
 function pruneOldDurations() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  Object.keys(durations).forEach((day) => {
-    if (day < cutoff) delete durations[day];
-  });
-  saveDurations();
+  db.prepare('DELETE FROM durations WHERE day < ?').run(cutoff);
+  db.prepare('DELETE FROM duration_buckets WHERE day < ?').run(cutoff);
 }
 
-function appendEvent(event) {
-  const record = { ...event, timestamp: new Date().toISOString() };
-  fs.appendFile(EVENTS_FILE, JSON.stringify(record) + '\n', (err) => {
-    if (err) console.error('Failed to write stats event', err);
-  });
-}
+// ─── url seen (duplicate-render tracking) ───────────────────────────────────
 
-function readEvents() {
-  if (!fs.existsSync(EVENTS_FILE)) return [];
-  return fs.readFileSync(EVENTS_FILE, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (e) {
-        return null;
-      }
-    })
-    .filter(Boolean);
-}
-
-function pruneOldEvents() {
-  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  const events = readEvents().filter((e) => new Date(e.timestamp).getTime() >= cutoff);
-  // Same atomic-rename defense as writeJsonAtomic — this fully rewrites the file rather
-  // than appending, so a crash mid-write must not be able to leave it truncated.
-  const tmpPath = `${EVENTS_FILE}.tmp`;
-  fs.writeFileSync(tmpPath, events.map((e) => JSON.stringify(e)).join('\n') + (events.length ? '\n' : ''));
-  fs.renameSync(tmpPath, EVENTS_FILE);
-  return events.length;
-}
-
-function loadUrlSeen() {
-  return readJsonSafe(URL_SEEN_FILE);
-}
-
-const urlSeen = loadUrlSeen();
-
-function saveUrlSeen() {
-  writeJsonAtomic(URL_SEEN_FILE, urlSeen, 'urlSeen');
-}
+const upsertUrlSeen = db.prepare(`
+  INSERT INTO url_seen (day, domain, url, n) VALUES (?, ?, ?, 1)
+  ON CONFLICT(day, domain, url) DO UPDATE SET n = n + 1
+  RETURNING n
+`);
 
 // How many times each URL has rendered successfully today, per domain — lets a
 // "duplicate render" rate be derived (any render past the first for the same URL on
 // the same day). Bounded by distinct URLs actually rendered per day rather than by
-// domain/type/client cardinality like counts.json, so it can grow larger for
-// high-traffic domains; pruned on the same 30-day cutoff as everything else.
+// domain/type/client cardinality like counts, so it can grow larger for high-traffic
+// domains; pruned on the same 30-day cutoff as everything else.
 function recordUrlSeen(domain, urlStr) {
   if (!urlStr) return 0;
   const day = new Date().toISOString().slice(0, 10);
-  const d = domain || 'unknown';
-  urlSeen[day] = urlSeen[day] || {};
-  urlSeen[day][d] = urlSeen[day][d] || {};
-  const n = (urlSeen[day][d][urlStr] || 0) + 1;
-  urlSeen[day][d][urlStr] = n;
-  saveUrlSeen();
-  return n;
+  const row = upsertUrlSeen.get(day, domain || 'unknown', urlStr);
+  return row ? row.n : 0;
 }
 
-function readUrlSeen() {
-  return urlSeen;
+// Aggregated in SQL rather than pulling every distinct URL into JS just to sum and
+// discard them — url_seen can hold thousands of rows per day for a high-traffic domain.
+function readUrlSeenSummary() {
+  return db.prepare(`
+    SELECT day AS date, domain,
+           SUM(n) AS totalRenders,
+           SUM(CASE WHEN n > 1 THEN n - 1 ELSE 0 END) AS duplicateRenders
+    FROM url_seen
+    GROUP BY day, domain
+  `).all();
 }
 
 function pruneOldUrlSeen() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  Object.keys(urlSeen).forEach((day) => {
-    if (day < cutoff) delete urlSeen[day];
-  });
-  saveUrlSeen();
+  db.prepare('DELETE FROM url_seen WHERE day < ?').run(cutoff);
 }
 
-function loadRoutePatterns() {
-  return readJsonSafe(ROUTE_PATTERNS_FILE);
-}
+// ─── route patterns ──────────────────────────────────────────────────────────
 
-const routePatterns = loadRoutePatterns();
+const upsertRoutePattern = db.prepare(`
+  INSERT INTO route_patterns (day, domain, pattern, n) VALUES (?, ?, ?, 1)
+  ON CONFLICT(day, domain, pattern) DO UPDATE SET n = n + 1
+`);
 
-function saveRoutePatterns() {
-  writeJsonAtomic(ROUTE_PATTERNS_FILE, routePatterns, 'routePatterns');
-}
-
-// Same shape as counts.json but keyed by a normalized route pattern instead of event
+// Same shape as counts but keyed by a normalized route pattern instead of event
 // type/client — normalization (see routePattern.js) collapses IDs out of the path so
 // cardinality stays close to the number of distinct route *shapes*, not distinct URLs.
 function incrementRoutePattern(domain, pattern) {
   if (!pattern) return;
   const day = new Date().toISOString().slice(0, 10);
-  const d = domain || 'unknown';
-  routePatterns[day] = routePatterns[day] || {};
-  routePatterns[day][d] = routePatterns[day][d] || {};
-  routePatterns[day][d][pattern] = (routePatterns[day][d][pattern] || 0) + 1;
-  saveRoutePatterns();
+  upsertRoutePattern.run(day, domain || 'unknown', pattern);
 }
 
 function readRoutePatterns() {
-  return routePatterns;
+  return db.prepare('SELECT day AS date, domain, pattern, n FROM route_patterns').all();
 }
 
 function pruneOldRoutePatterns() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  Object.keys(routePatterns).forEach((day) => {
-    if (day < cutoff) delete routePatterns[day];
-  });
-  saveRoutePatterns();
+  db.prepare('DELETE FROM route_patterns WHERE day < ?').run(cutoff);
 }
 
-function loadCacheStats() {
-  return readJsonSafe(CACHE_STATS_FILE);
-}
+// ─── cache stats ─────────────────────────────────────────────────────────────
 
-const cacheStats = loadCacheStats();
-
-function saveCacheStats() {
-  writeJsonAtomic(CACHE_STATS_FILE, cacheStats, 'cacheStats');
-}
+const upsertCacheStat = db.prepare(`
+  INSERT INTO cache_stats (day, domain, cache_name, outcome, n) VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(day, domain, cache_name, outcome) DO UPDATE SET n = n + excluded.n
+`);
 
 // One bucket per day/domain/cache-name/outcome. cacheName distinguishes independent
 // caches (e.g. "thesaurus" — renderer.js's in-process API response cache — vs
 // "nginx_edge" — the X-Proxy-Cache status nginx forwards per request); outcome is
 // cache-specific ("hit"/"miss" for thesaurus, the raw $upstream_cache_status value
-// lowercased for nginx_edge).
+// lowercased for nginx_edge). n can be >1 (batched hit/miss counts), unlike the other
+// counters here, so this upserts n = n + excluded.n rather than a literal + 1.
 function recordCacheCount(cacheName, domain, outcome, n = 1) {
   if (!n) return;
   const day = new Date().toISOString().slice(0, 10);
-  const d = domain || 'unknown';
-  cacheStats[day] = cacheStats[day] || {};
-  cacheStats[day][d] = cacheStats[day][d] || {};
-  cacheStats[day][d][cacheName] = cacheStats[day][d][cacheName] || {};
-  cacheStats[day][d][cacheName][outcome] = (cacheStats[day][d][cacheName][outcome] || 0) + n;
-  saveCacheStats();
+  upsertCacheStat.run(day, domain || 'unknown', cacheName, outcome, n);
 }
 
 function readCacheStats() {
-  return cacheStats;
+  return db.prepare('SELECT day AS date, domain, cache_name AS cacheName, outcome, n FROM cache_stats').all();
 }
 
 function pruneOldCacheStats() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  Object.keys(cacheStats).forEach((day) => {
-    if (day < cutoff) delete cacheStats[day];
-  });
-  saveCacheStats();
+  db.prepare('DELETE FROM cache_stats WHERE day < ?').run(cutoff);
 }
 
-function loadSoft404Urls() {
-  return readJsonSafe(SOFT_404_URLS_FILE);
-}
+// ─── soft 404 urls ───────────────────────────────────────────────────────────
 
-const soft404Urls = loadSoft404Urls();
-
-function saveSoft404Urls() {
-  writeJsonAtomic(SOFT_404_URLS_FILE, soft404Urls, 'soft404Urls');
-}
+const upsertSoft404Url = db.prepare(`
+  INSERT INTO soft_404_urls (url, last_seen_day) VALUES (?, ?)
+  ON CONFLICT(url) DO UPDATE SET last_seen_day = excluded.last_seen_day
+`);
+const selectSoft404Url = db.prepare('SELECT 1 FROM soft_404_urls WHERE url = ?');
 
 // URL -> last-seen day it was confirmed to render as a soft 404. Lets renderer.js
 // short-circuit a URL it otherwise only suspects is bogus (e.g. matches
@@ -332,29 +316,36 @@ function saveSoft404Urls() {
 // shell, without ever 404ing a URL that hasn't been confirmed bad first.
 function recordSoft404Url(urlStr) {
   if (!urlStr) return;
-  soft404Urls[urlStr] = new Date().toISOString().slice(0, 10);
-  saveSoft404Urls();
+  upsertSoft404Url.run(urlStr, new Date().toISOString().slice(0, 10));
 }
 
 function isKnownSoft404Url(urlStr) {
-  return Boolean(urlStr && soft404Urls[urlStr]);
+  return Boolean(urlStr && selectSoft404Url.get(urlStr));
 }
 
 function pruneOldSoft404Urls() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  Object.keys(soft404Urls).forEach((urlStr) => {
-    if (soft404Urls[urlStr] < cutoff) delete soft404Urls[urlStr];
-  });
-  saveSoft404Urls();
+  db.prepare('DELETE FROM soft_404_urls WHERE last_seen_day < ?').run(cutoff);
 }
 
 function countSoft404Urls() {
-  return Object.keys(soft404Urls).length;
+  return db.prepare('SELECT COUNT(*) AS c FROM soft_404_urls').get().c;
+}
+
+// ─── backup ──────────────────────────────────────────────────────────────────
+
+// Consistent point-in-time snapshot even while the live db is being written —
+// piggybacked on the existing prune interval in server.js. No backup mechanism exists
+// otherwise for this data (a single-node Docker volume, no replication).
+function backupTo(backupPath) {
+  db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
 }
 
 module.exports = {
+  close,
+  withTransaction,
   appendEvent,
-  readEvents,
+  readRecentEvents,
   pruneOldEvents,
   incrementCount,
   readCounts,
@@ -367,7 +358,7 @@ module.exports = {
   pruneOldDurations,
   DURATION_BUCKETS_MS,
   recordUrlSeen,
-  readUrlSeen,
+  readUrlSeenSummary,
   pruneOldUrlSeen,
   incrementRoutePattern,
   readRoutePatterns,
@@ -379,5 +370,6 @@ module.exports = {
   isKnownSoft404Url,
   pruneOldSoft404Urls,
   countSoft404Urls,
+  backupTo,
   RETENTION_DAYS,
 };
