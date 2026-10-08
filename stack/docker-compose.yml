@@ -29,7 +29,15 @@ services:
       placement:
         constraints:
           - node.role == manager
-    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+    # Reloads periodically so app.conf's urlToHtml_replicas upstream re-resolves
+    # tasks.urlToHtml and picks up replicas Swarm has replaced/restarted/scaled
+    # since the last reload (nginx only resolves a hostname `server` line at
+    # load/reload, not continuously) — this loop already existed for cert renewal
+    # (was every 6h), just shortened. `nginx -t &&` keeps a transient DNS hiccup at
+    # reload time from silently leaving the peer list stale with no signal — a
+    # failed test/reload lands in this container's stdout, which the json-file
+    # logging driver below captures.
+    command: "/bin/sh -c 'while :; do sleep 90s & wait $${!}; nginx -t && nginx -s reload || echo \"nginx reload failed at $$(date)\"; done & nginx -g \"daemon off;\"'"
 
   certbot:
     image: certbot/certbot
