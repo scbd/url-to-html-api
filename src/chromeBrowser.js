@@ -16,6 +16,11 @@ fs.mkdirSync(CHROME_USER_DATA_DIR, { recursive: true });
 
 let browser;
 let restartBrowser = false;
+// Tried 6 without a matching bump to the urlToHtml service's CPU allocation (still
+// capped at 1 CPU in docker-compose-prerender.yml) — confirmed the predicted risk:
+// avg render time jumped to ~25s right after that deploy (CPU contention across more
+// concurrent pages on the same single core outweighed the extra concurrency). Reverted
+// to 4. Don't raise this again without also raising the CPU limit/reservation.
 const MAX_CONCURRENT_RENDERS = 4;
 // Tracks renders dispatched but not yet finished, incremented synchronously the instant
 // renderHtml is called. browser.pages().length lags behind (page creation is async), so
