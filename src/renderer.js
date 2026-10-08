@@ -418,7 +418,8 @@ async function renderHtml (urlRequest){
                 queueWaitMs: urlRequest.renderStartedOn.getTime() - urlRequest.requestDate.getTime(),
                 userAgent: urlRequest.userAgent,
                 cacheCounts,
-                edgeCacheStatus: urlRequest.edgeCacheStatus
+                edgeCacheStatus: urlRequest.edgeCacheStatus,
+                responseBytes: Buffer.byteLength(pageContent)
             });
 
     } catch (err) {

@@ -43,6 +43,7 @@ app.post('/events', (req, res) => {
       if (event.type !== 'legacy_url_redirect' && event.type !== 'malformed_url_404' && event.type !== 'security_probe_404') {
         store.incrementCount(event.type, event.domain, client);
         store.incrementHourlyCount(event.type, event.domain, client);
+        store.incrementInstanceCount(event.instance, event.type);
       }
       if (event.type !== 'render_success') {
         store.appendEvent(event);
@@ -55,6 +56,9 @@ app.post('/events', (req, res) => {
       }
       if (typeof event.queueWaitMs === 'number') {
         store.recordDuration(event.domain, 'queueWaitMs', event.queueWaitMs);
+      }
+      if (typeof event.responseBytes === 'number') {
+        store.recordInstanceBytes(event.instance, event.responseBytes);
       }
       // Per-name breakdown (thesaurus/countries/jsdelivr — see CACHEABLE_ENTRIES in
       // renderer.js) rather than one pooled counter, so a jsdelivr URL's very different
@@ -93,9 +97,9 @@ const LIVE_INSTANCE_STALE_MS = 60 * 1000;
 const liveInstances = {};
 
 app.post('/live-status', (req, res) => {
-  const { instance, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries } = req.body || {};
+  const { instance, activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries, uptimeMs } = req.body || {};
   if (!instance) return res.sendStatus(400);
-  liveInstances[instance] = { activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries, updatedAt: Date.now() };
+  liveInstances[instance] = { activeRenders, rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries, uptimeMs, updatedAt: Date.now() };
   res.sendStatus(204);
 });
 
@@ -116,9 +120,14 @@ app.get('/api/live', (req, res) => {
       externalMB: v.externalMB,
       openPages: v.openPages,
       networkResponseCacheEntries: v.networkResponseCacheEntries,
+      uptimeMs: v.uptimeMs,
       ageMs: now - v.updatedAt,
     }));
-  res.json({ instances });
+  // Flat {instance, type, n} rows, summed over the last 48h — kept separate from
+  // `instances` (in-memory only) since this comes from SQLite; the dashboard applies
+  // its existing statusOf() to bucket into restart count / error rate per instance,
+  // same "backend ships flat counts, client classifies" pattern as /api/stats.
+  res.json({ instances, instanceCounts: store.readInstanceCounts() });
 });
 
 // Lets renderer.js confirm a URL it only suspects is bogus (matches
@@ -181,6 +190,7 @@ app.get('/api/stats', (req, res) => {
     counts: rows,
     durations: store.readDurations(),
     durationBucketBoundaries: store.DURATION_BUCKETS_MS,
+    instanceBytes: store.readInstanceBytes(),
     duplicates: store.readUrlSeenSummary(),
     routePatterns: store.readRoutePatterns(),
     cacheStats: store.readCacheStats(),
@@ -211,7 +221,9 @@ setInterval(() => {
   const remaining = store.pruneOldEvents();
   store.pruneOldCounts();
   store.pruneOldHourlyCounts();
+  store.pruneOldInstanceCounts();
   store.pruneOldDurations();
+  store.pruneOldInstanceBytes();
   store.pruneOldUrlSeen();
   store.pruneOldRoutePatterns();
   store.pruneOldCacheStats();

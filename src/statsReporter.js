@@ -1,4 +1,5 @@
 const { log } = require('./debugLog');
+const INSTANCE_ID = require('./instanceId');
 
 const STATS_URL = process.env.STATS_URL || 'http://stats:7200';
 
@@ -6,7 +7,7 @@ function reportEvent(type, payload){
     fetch(`${STATS_URL}/events`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, ...payload }),
+        body: JSON.stringify({ type, instance: INSTANCE_ID, ...payload }),
         signal: AbortSignal.timeout(2000)
     }).catch((e)=>{
         log(`Failed to report stats event to ${STATS_URL}`, e ? e.toString() : 'unknown');

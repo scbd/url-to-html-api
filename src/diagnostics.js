@@ -4,6 +4,8 @@ const { inflightRequests, getInflightCount } = require('./inflightRequests');
 const { networkResponseCache } = require('./networkResponseCache');
 const { reportLiveStatus } = require('./statsReporter');
 
+const PROCESS_STARTED_AT = Date.now();
+
 async function captureDiagnostics(){
     const mem = process.memoryUsage();
     let openPages = null;
@@ -47,7 +49,7 @@ async function logInflightSnapshot(){
     // Entry count in the disk-persisted network response cache (thesaurus/countries/
     // jsdelivr) — has no TTL-driven eviction of its own, so this is the visibility
     // that catches unbounded growth before it's a problem, not just a hit-rate number.
-    reportLiveStatus({ instance: INSTANCE_ID, activeRenders: getActiveRenders(), rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries: networkResponseCache.size });
+    reportLiveStatus({ instance: INSTANCE_ID, activeRenders: getActiveRenders(), rendering, queued, rssMB, heapUsedMB, externalMB, openPages, networkResponseCacheEntries: networkResponseCache.size, uptimeMs: Date.now() - PROCESS_STARTED_AT });
 }
 
 module.exports = { captureDiagnostics, logInflightSnapshot };

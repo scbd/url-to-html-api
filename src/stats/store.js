@@ -33,8 +33,8 @@ function withTransaction(fn) {
 // ─── events ──────────────────────────────────────────────────────────────────
 
 const insertEvent = db.prepare(`
-  INSERT INTO events (type, domain, url, ip, user_agent, referer, country, edge_cache_status, error, reason, redirect_to, queue_wait_ms, timestamp)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO events (type, domain, url, ip, user_agent, referer, country, edge_cache_status, error, reason, redirect_to, queue_wait_ms, timestamp, instance)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 function appendEvent(event) {
@@ -52,7 +52,8 @@ function appendEvent(event) {
     event.reason ?? null,
     event.redirectTo ?? null,
     typeof event.queueWaitMs === 'number' ? event.queueWaitMs : null,
-    timestamp
+    timestamp,
+    event.instance ?? null
   );
 }
 
@@ -71,6 +72,7 @@ function rowToEvent(row) {
     redirectTo: row.redirect_to,
     queueWaitMs: row.queue_wait_ms,
     timestamp: row.timestamp,
+    instance: row.instance,
   };
 }
 
@@ -149,6 +151,34 @@ function pruneOldHourlyCounts() {
   db.prepare('DELETE FROM hourly_counts WHERE hour < ?').run(cutoff);
 }
 
+// ─── instance counts ─────────────────────────────────────────────────────────
+
+const upsertInstanceCount = db.prepare(`
+  INSERT INTO instance_counts (hour, instance, type, n) VALUES (?, ?, ?, 1)
+  ON CONFLICT(hour, instance, type) DO UPDATE SET n = n + 1
+`);
+
+// Feeds the Live Activity tab's per-instance restart count / error rate — same
+// upsert shape as incrementHourlyCount, keyed by instance instead of domain+client.
+function incrementInstanceCount(instance, type) {
+  if (!instance) return;
+  const hour = new Date().toISOString().slice(0, 13);
+  upsertInstanceCount.run(hour, instance, type);
+}
+
+// Summed across all retained hours (48h, same as hourly_counts) rather than scoped to
+// one hour — this is "how has this instance been doing lately," not a single-hour
+// snapshot. Flat rows; the dashboard's existing statusOf() does the success/error/
+// restart bucketing, same "backend stays dumb" pattern as readCounts/readHourlyCounts.
+function readInstanceCounts() {
+  return db.prepare('SELECT instance, type, SUM(n) AS n FROM instance_counts GROUP BY instance, type').all();
+}
+
+function pruneOldInstanceCounts() {
+  const cutoff = new Date(Date.now() - HOURLY_RETENTION_HOURS * 60 * 60 * 1000).toISOString().slice(0, 13);
+  db.prepare('DELETE FROM instance_counts WHERE hour < ?').run(cutoff);
+}
+
 // ─── durations ───────────────────────────────────────────────────────────────
 
 // Upper bound (ms) of each latency bucket — a render/queue-wait falls in the first
@@ -210,6 +240,31 @@ function pruneOldDurations() {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   db.prepare('DELETE FROM durations WHERE day < ?').run(cutoff);
   db.prepare('DELETE FROM duration_buckets WHERE day < ?').run(cutoff);
+}
+
+// ─── instance bytes (rendered response size, per instance) ─────────────────
+
+const upsertInstanceBytes = db.prepare(`
+  INSERT INTO instance_bytes (day, instance, sum, count) VALUES (?, ?, ?, 1)
+  ON CONFLICT(day, instance) DO UPDATE SET sum = sum + excluded.sum, count = count + 1
+`);
+
+// Running sum+count per day/instance, same shape as recordDuration — lets both a
+// per-instance total and an average response size be derived later without storing
+// one row per render.
+function recordInstanceBytes(instance, bytes) {
+  if (!instance || typeof bytes !== 'number') return;
+  const day = new Date().toISOString().slice(0, 10);
+  upsertInstanceBytes.run(day, instance, bytes);
+}
+
+function readInstanceBytes() {
+  return db.prepare('SELECT day AS date, instance, sum, count FROM instance_bytes').all();
+}
+
+function pruneOldInstanceBytes() {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  db.prepare('DELETE FROM instance_bytes WHERE day < ?').run(cutoff);
 }
 
 // ─── url seen (duplicate-render tracking) ───────────────────────────────────
@@ -353,10 +408,16 @@ module.exports = {
   incrementHourlyCount,
   readHourlyCounts,
   pruneOldHourlyCounts,
+  incrementInstanceCount,
+  readInstanceCounts,
+  pruneOldInstanceCounts,
   recordDuration,
   readDurations,
   pruneOldDurations,
   DURATION_BUCKETS_MS,
+  recordInstanceBytes,
+  readInstanceBytes,
+  pruneOldInstanceBytes,
   recordUrlSeen,
   readUrlSeenSummary,
   pruneOldUrlSeen,
