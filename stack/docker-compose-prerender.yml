@@ -17,6 +17,12 @@ services:
       options:
         max-size: "10m"
         max-file: "50"
+    deploy:
+      placement:
+        constraints:
+          # Services/Stacks/Nodes views only exist when Portainer reads a manager's
+          # Docker socket; on a worker it can only list that node's containers.
+          - node.role == manager
 
   urlToHtml:
     image: scbd/url-to-html-api:prerender-dev

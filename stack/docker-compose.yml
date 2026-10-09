@@ -50,6 +50,12 @@ services:
       options:
         max-size: "10m"
         max-file: "50"
+    deploy:
+      placement:
+        constraints:
+          # Bind-mounts ./data/certbot from the manager (same as nginx) — on a worker
+          # it would renew into an empty directory and the real certs never update.
+          - node.role == manager
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
  
 networks:
