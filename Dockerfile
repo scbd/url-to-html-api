@@ -1,11 +1,11 @@
-﻿FROM node:20.0
+FROM node:26-bookworm-slim
 
 WORKDIR /usr/src/app
 
 ENV NODE_ENV production
 ENV PORT 7100
 
-RUN apt-get update && apt-get install gnupg wget -y && \
+RUN apt-get update && apt-get install ca-certificates gnupg wget -y --no-install-recommends && \
     wget --quiet --output-document=- https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google-archive.gpg && \
     sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' && \
     apt-get update && \
