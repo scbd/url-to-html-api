@@ -1,0 +1,130 @@
+# Secrets required:
+#
+# Registry (org-level):
+#   DOCKERHUB_USERNAME  - Docker Hub username
+#   DOCKERHUB_TOKEN     - Docker Hub access token
+#
+# Deployment webhook (repo-level, optional - omit if no deploy target):
+#   WEBHOOK_URL_DEV     - Portainer service webhook URL for dev redeploy
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    # Calver tags only: YYYY.N or YYYY.N.N (e.g. 2026.48.0) - no leading v
+    tags: ['[0-9][0-9][0-9][0-9].[0-9]*']
+  pull_request:
+    branches: [master, dev]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: scbd/url-to-html-api
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Logic:
+      #   calver tag (YYYY.N.N) -> tags=<tag> + latest, push=true
+      #   dev branch            -> tags=dev,            push=true (+ dev webhook)
+      #   anything else         -> tags=build-<sha>,    push=false (build + test only)
+      - name: Resolve image tags
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE="${{ env.IMAGE_NAME }}"
+          REF="${GITHUB_REF}"
+
+          if [[ "${REF}" =~ ^refs/tags/[0-9]{4}\.[0-9]+(\.[0-9]+)*$ ]]; then
+            TAG="${REF#refs/tags/}"
+            echo "tags<<EOF"          >> $GITHUB_OUTPUT
+            echo "${IMAGE}:${TAG}"    >> $GITHUB_OUTPUT
+            echo "${IMAGE}:latest"    >> $GITHUB_OUTPUT
+            echo "EOF"                >> $GITHUB_OUTPUT
+            echo "push=true"          >> $GITHUB_OUTPUT
+            echo "branch="            >> $GITHUB_OUTPUT
+
+          elif [[ "${REF}" == "refs/heads/dev" ]]; then
+            echo "tags=${IMAGE}:dev" >> $GITHUB_OUTPUT
+            echo "push=true"         >> $GITHUB_OUTPUT
+            echo "branch=dev"        >> $GITHUB_OUTPUT
+
+          else
+            echo "tags=${IMAGE}:build-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "push=false"                        >> $GITHUB_OUTPUT
+            echo "branch="                           >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.meta.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          build-args: COMMIT=${{ github.sha }}
+          load: true
+          tags: ci-build:local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 1. Start the image and wait (max ~120s) until Express answers on :7100
+      #    and prerender reports headless Chrome started. An invalid url is a
+      #    cheap request that hits the app without rendering anything (500 with
+      #    a known body). The image has no curl, so curl runs on the runner.
+      # 2. Run the node:test smoke suite inside the image: renders a local
+      #    JS page through Chrome (public page render skipped: no external deps).
+      - name: Test image
+        run: |
+          fail() { echo "::error::$1"; docker logs app || true; exit 1; }
+
+          docker run --name app -d -p 7100:7100 ci-build:local
+
+          for i in $(seq 1 60); do
+            [[ "$(docker inspect -f '{{.State.Running}}' app)" == "true" ]] || fail "container exited"
+            body="$(curl -sS --max-time 5 'http://localhost:7100/api/render-html?url=not-a-url' || true)"
+            logs="$(docker logs app 2>&1)"
+            if [[ "$body" == *"Error when rendering page not-a-url"* && "$logs" == *"Started Chrome"* ]]; then
+              echo "App is up and Chrome started after ~$((i * 2))s"
+              break
+            fi
+            [[ $i -eq 60 ]] && fail "app did not become ready on port 7100"
+            sleep 2
+          done
+
+          docker run --rm \
+            --add-host url2html-smoke.cbddev.xyz:127.0.0.1 \
+            -e SMOKE_SKIP_PUBLIC=1 \
+            ci-build:local npm test || fail "smoke tests failed"
+
+          docker logs app
+
+      - name: Push image
+        if: steps.meta.outputs.push == 'true'
+        run: |
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            docker tag ci-build:local "$tag"
+            docker push "$tag"
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+      # Portainer webhook - non-critical, a failed redeploy never blocks CI.
+      - name: Deploy to Portainer (dev)
+        if: steps.meta.outputs.branch == 'dev'
+        continue-on-error: true
+        uses: newarifrh/portainer-service-webhook@v1
+        with:
+          webhook_url: ${{ secrets.WEBHOOK_URL_DEV }}
