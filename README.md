@@ -12,6 +12,3 @@ url-to-html-api
 6. sudo ./init-letsencrypt.sh (only for the first time)
 
 sudo docker stack rm  prerender
-
-sudo docker swarm join-token worker
- docker swarm join --token SWMTKN-1-************ 172.******:2377
