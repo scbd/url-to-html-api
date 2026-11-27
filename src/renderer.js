@@ -33,6 +33,7 @@ async function renderUrl (req, res){
     const startTime = +new Date();
     const lastCall = +new Date();
     let requestEntry;
+    const highPriority = req.query.priority === 'high';
     try{
 
         if(SENSITIVE_PATH_RE.test(htmlUrl.pathname)){
@@ -79,6 +80,7 @@ async function renderUrl (req, res){
         if(existing && !['finished', 'error'].includes(existing.status)){
             log('Joining existing inflight request for ', clientUrl);
             requestEntry = existing;
+            if(highPriority) requestEntry.priority = 'high';
         }
         else {
             log('Adding inflight request for ', clientUrl);
@@ -86,6 +88,7 @@ async function renderUrl (req, res){
                 url         : clientUrl,
                 requestDate : new Date(),
                 status : 'request',
+                priority : highPriority ? 'high' : 'normal',
                 numberOfChecks : 0,
                 ...requesterInfo(req)
             };
@@ -150,7 +153,9 @@ async function processInflightRequest(){
 
                 const canProcessRequest = await chromeBrowser.hasFreeTabs(Object.keys(inflightRequests)?.length);
                 if(canProcessRequest){
-                    const urlRequest = Object.values(inflightRequests)?.find(e=>e?.status == 'request');
+                    const queued = Object.values(inflightRequests)?.filter(e=>e?.status == 'request');
+                    // priority=high jobs (e.g. PDF generation) jump ahead of crawler traffic; FIFO within each tier.
+                    const urlRequest = queued.find(e=>e.priority == 'high') || queued[0];
 
                     if(urlRequest?.status == 'request'){
                         renderHtml(urlRequest)
