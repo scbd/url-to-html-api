@@ -706,6 +706,20 @@
               <div class="share-track" style="height:6px; margin-top:4px;"><div class="share-fill" :style="{ width: r.widthPct + '%' }"></div></div>
             </div>
           </div>
+          <h3 style="margin:18px 0 6px; font-size:13px;">Route facets <span style="font-weight:400; color:var(--text-muted);">(click a path to drill down)</span></h3>
+          <div v-if="!facetRows.length" class="empty">No route facets in this range.</div>
+          <div v-else style="display:flex; flex-direction:column; gap:2px; font-size:12px;">
+            <div v-for="f in facetRows" :key="f.key" :style="{ paddingLeft: (f.depth * 16) + 'px' }"
+                 style="display:flex; justify-content:space-between; gap:12px; padding:3px 0;">
+              <span v-if="f.more" style="color:var(--accent, var(--text-secondary)); cursor:pointer; padding-left:12px;" @click="loadMoreFacets(f.prefix)">Show {{ Math.min(f.hidden, FACET_PAGE).toLocaleString() }} more ({{ f.hidden.toLocaleString() }} hidden)</span>
+              <span v-else class="url" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                    :style="{ cursor: f.deeper ? 'pointer' : 'default', color: f.deeper ? 'var(--text-primary)' : 'var(--text-secondary)' }"
+                    @click="f.deeper && toggleFacet(f.path)">
+                <span style="display:inline-block; width:12px;">{{ f.deeper ? (f.open ? '▾' : '▸') : '' }}</span>{{ f.label }}
+              </span>
+              <span v-if="!f.more" style="color:var(--text-muted); flex:none;">{{ f.distinctPatterns.toLocaleString() }} patterns · {{ f.hits.toLocaleString() }} hits</span>
+            </div>
+          </div>
           <div class="gap-note" style="margin-top:12px;">Normalized by a generic heuristic (record-ID-like segments collapsed to <code>&lt;id&gt;</code>) — a rough grouping, not an exact router.</div>
         </div>
       </div>
@@ -1316,6 +1330,9 @@ createApp({
     const rawInstanceBytes = ref([]);
     const rawDuplicates = ref([]);
     const rawRoutePatterns = ref([]);
+    // Drill-down tree over route patterns: prefix ('' = root) -> that level's rows.
+    const facetLevels = ref({});
+    const openFacets = ref(new Set());
     const rawCacheStats = ref([]);
     const hourly = ref(null);
     // Interactive peer of the day-range filter buttons — live current hour, distinct
@@ -1912,13 +1929,8 @@ createApp({
     // heuristic (see routePattern.js), not a precise router, so treat this as "roughly
     // this template" rather than an exact grouping.
     const routePatternRows = computed(() => {
-      const cutoffVal = cutoff.value;
-      const nowDay = isoDay(new Date(NOW_MS));
-      const totals = {};
-      rawRoutePatterns.value
-        .filter((r) => r.date >= cutoffVal && r.date <= nowDay && (!domainFilter.value || r.domain === domainFilter.value))
-        .forEach((r) => { totals[r.pattern] = (totals[r.pattern] || 0) + r.n; });
-      const rows = Object.entries(totals).map(([pattern, n]) => ({ pattern, n })).sort((a, b) => b.n - a.n).slice(0, 8);
+      // Already aggregated and capped server-side for the current range/domain.
+      const rows = rawRoutePatterns.value;
       const max = Math.max(1, ...rows.map((r) => r.n));
       return rows.map((r) => ({ ...r, widthPct: (r.n / max) * 100 }));
     });
@@ -2057,7 +2069,111 @@ createApp({
       }
     }
 
+    let statsCtl = null;
+    let liveInFlight = false;
+    let routePatternsCtl = null;
+    let facetsGen = 0;
+    let facetsBusy = 0;
+
+    async function fetchFacetLevel(prefix, params) {
+      const p = new URLSearchParams(params);
+      if (prefix) p.set('prefix', prefix);
+      const res = await fetch(`http://localhost:7200/api/route-patterns/facets?${p}`);
+      const data = await res.json();
+      return { rows: data.facets || [], total: data.total || 0 };
+    }
+
+    const FACET_PAGE = 50;
+
+    // Appends the next page to one level, keeping everything already loaded for it.
+    async function loadMoreFacets(prefix) {
+      const level = facetLevels.value[prefix];
+      if (!level) return;
+      const params = { from: cutoff.value, to: isoDay(new Date(NOW_MS)), offset: level.rows.length, limit: FACET_PAGE };
+      if (domainFilter.value) params.domain = domainFilter.value;
+      const next = await fetchFacetLevel(prefix, params);
+      const cur = facetLevels.value[prefix];
+      if (!cur || cur.rows.length !== level.rows.length) return; // superseded by a refresh
+      facetLevels.value = { ...facetLevels.value, [prefix]: { rows: [...cur.rows, ...next.rows], total: next.total || cur.total } };
+    }
+
+    // Refreshes the root plus every currently-open level. A newer call supersedes an
+    // older one (facetsGen) so a slow response can't overwrite fresher data.
+    async function loadFacets() {
+      const gen = ++facetsGen;
+      const params = { from: cutoff.value, to: isoDay(new Date(NOW_MS)) };
+      if (domainFilter.value) params.domain = domainFilter.value;
+      const prefixes = ['', ...openFacets.value];
+      const levels = {};
+      facetsBusy++;
+      try {
+        await Promise.all(prefixes.map(async (pre) => {
+        const loaded = facetLevels.value[pre]?.rows.length || 0;
+        levels[pre] = await fetchFacetLevel(pre, { ...params, limit: Math.min(Math.max(loaded, FACET_PAGE), 500) });
+      }));
+        if (gen === facetsGen) facetLevels.value = levels;
+      } finally {
+        facetsBusy--;
+      }
+    }
+
+    function toggleFacet(path) {
+      const open = new Set(openFacets.value);
+      if (open.has(path)) {
+        for (const p of [...open]) if (p === path || p.startsWith(path + '/')) open.delete(p);
+      } else {
+        open.add(path);
+      }
+      openFacets.value = open;
+      loadFacets();
+    }
+
+    const facetRows = computed(() => {
+      const out = [];
+      const walk = (prefix, depth) => {
+        const level = facetLevels.value[prefix] || { rows: [], total: 0 };
+        for (const f of level.rows) {
+          const path = `${prefix}/${f.segment}`;
+          const open = openFacets.value.has(path);
+          out.push({ key: path, path, depth, label: f.segment || '/', distinctPatterns: f.distinctPatterns, hits: f.hits, deeper: f.deeper > 0, open });
+          if (open && f.deeper > 0) walk(path, depth + 1);
+        }
+        if (level.total > level.rows.length) out.push({ key: `${prefix}#more`, more: true, prefix, depth, hidden: level.total - level.rows.length });
+      };
+      walk('', 0);
+      return out;
+    });
+
+    async function loadRoutePatterns() {
+      if (routePatternsCtl) routePatternsCtl.abort();
+      const ctl = new AbortController();
+      routePatternsCtl = ctl;
+      const params = new URLSearchParams({ from: cutoff.value, to: isoDay(new Date(NOW_MS)) });
+      if (domainFilter.value) params.set('domain', domainFilter.value);
+      try {
+        const res = await fetch(`http://localhost:7200/api/route-patterns?${params}`, { signal: ctl.signal });
+        const data = await res.json();
+        rawRoutePatterns.value = data.routePatterns || [];
+      } catch (e) {
+        if (e.name !== 'AbortError') throw e;
+      } finally {
+        if (routePatternsCtl === ctl) routePatternsCtl = null;
+      }
+    }
+
     async function loadStats() {
+      const ctl = new AbortController();
+      statsCtl = ctl;
+      try {
+        await fetchStats(ctl.signal);
+      } catch (e) {
+        if (e.name !== 'AbortError') throw e;
+      } finally {
+        if (statsCtl === ctl) statsCtl = null;
+      }
+    }
+
+    async function fetchStats(signal) {
       const params = new URLSearchParams();
       if (ASOF_PARAM) params.set('asOf', ASOF_PARAM);
       // ASOF_HOUR_PARAM (fixed, for the screenshot mechanism) takes precedence over
@@ -2065,7 +2181,7 @@ createApp({
       const effectiveHour = ASOF_HOUR_PARAM || (hourlyView.value ? new Date().toISOString().slice(0, 13) : null);
       if (effectiveHour) params.set('asOfHour', effectiveHour);
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const res = await fetch(`http://localhost:7200/api/stats${qs}`);
+      const res = await fetch(`http://localhost:7200/api/stats${qs}`, { signal });
       const data = await res.json();
       rawCounts.value = data.counts;
       hourly.value = data.hourly || null;
@@ -2079,30 +2195,44 @@ createApp({
       knownSoft404UrlCount.value = data.knownSoft404UrlCount || 0;
       rawSecurityProbes.value = data.recentSecurityProbes || [];
       rawDuplicates.value = data.duplicates || [];
-      rawRoutePatterns.value = data.routePatterns || [];
       rawCacheStats.value = data.cacheStats || [];
       retentionDays.value = data.retentionDays;
     }
 
     async function loadLiveStatus() {
-      const res = await fetch('http://localhost:7200/api/live');
-      const data = await res.json();
-      rawLive.value = data.instances || [];
-      rawInstanceCounts.value = data.instanceCounts || [];
+      liveInFlight = true;
+      try {
+        const res = await fetch('http://localhost:7200/api/live');
+        const data = await res.json();
+        rawLive.value = data.instances || [];
+        rawInstanceCounts.value = data.instanceCounts || [];
+      } finally {
+        liveInFlight = false;
+      }
     }
 
     let refreshTimer = null;
     function setRefreshInterval(ms) {
       if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = ms > 0 ? setInterval(() => { loadStats(); loadLiveStatus(); }, ms) : null;
+      refreshTimer = ms > 0 ? setInterval(() => {
+        // Skip a tick while the previous request is still running, so a slow
+        // response can't cause requests to pile up.
+        if (!statsCtl) loadStats();
+        if (!routePatternsCtl) loadRoutePatterns();
+        if (!facetsBusy) loadFacets();
+        if (!liveInFlight) loadLiveStatus();
+      }, ms) : null;
     }
     watch(refreshMs, (ms) => setRefreshInterval(ms), { immediate: true });
-    watch(hourlyView, () => loadStats());
+    watch([rangeDays, domainFilter], () => { openFacets.value = new Set(); loadRoutePatterns(); loadFacets(); });
+    watch(hourlyView, () => { if (statsCtl) statsCtl.abort(); loadStats(); });
     onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer); });
 
     onMounted(async () => {
       await loadCrawlerPatterns();
       await loadStats();
+      await loadRoutePatterns();
+      await loadFacets();
       await loadLiveStatus();
     });
 
@@ -2111,7 +2241,7 @@ createApp({
       rangeDays, domainFilter, statusFilter, botFilter, refreshMs, showDailyTable, activeTab,
       retentionDays, domains, kpis, insights, dailyTableRows, dailyChart, domainRows, domainBarVM,
       botRows, filteredSoftErrors, filteredRedirects, redirectBotRows, filteredMalformedUrls, malformedUrlBotRows, knownSoft404UrlCount, filteredSecurityProbes, securityProbeIpRows, errorGroups, distinctSignatureCount, mtbfLabel,
-      probeHits, probeIpCount, softCauses, trafficKpis, renderBudget, routePatternRows, failuresInRange, aggregates,
+      probeHits, probeIpCount, softCauses, trafficKpis, renderBudget, routePatternRows, facetRows, toggleFacet, loadMoreFacets, FACET_PAGE, failuresInRange, aggregates,
       cacheStatsSummary, cacheHelp, hourly, hourlySnapshot, hourlyView,
       liveInstances, liveEntries, totalRendering, totalQueued, instanceCards, oldestQueuedMs, duplicateQueuedCount, estimatedDrainSeconds,
       instanceBytesRows, totalResponseBytes,

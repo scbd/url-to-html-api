@@ -151,6 +151,37 @@ function toBotField(client) {
 // additionally scope the window to one specific day/hour.
 const ERROR_LIKE_EXCLUDE_TYPES = ['soft_404', 'legacy_url_redirect', 'malformed_url_404', 'security_probe_404'];
 
+app.get('/api/route-patterns', (req, res) => {
+  const { from, to, domain } = req.query;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) {
+    return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
+  }
+  // Paginated so the full table stays browsable (e.g. via curl) without ever shipping
+  // it whole; the dashboard card just takes the default first page of 8.
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  res.json({ routePatterns: store.readTopRoutePatterns({ from, to, domain, limit, offset }), limit, offset });
+});
+
+// Drill-down view of the same table: next-path-segment groups under `prefix`.
+app.get('/api/route-patterns/facets', (req, res) => {
+  const { from, to, domain } = req.query;
+  const prefix = req.query.prefix || '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) {
+    return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
+  }
+  if (prefix && (!prefix.startsWith('/') || prefix.endsWith('/') || prefix.length > 500)) {
+    return res.status(400).json({ error: 'prefix must be empty or a path like /database (no trailing slash)' });
+  }
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const rows = store.readRouteFacets({ from, to, domain, prefix, limit, offset });
+  // `total` = number of distinct segments at this level (same on every row), so the
+  // client can tell how many are still hidden beyond the current page.
+  const total = rows.length ? rows[0].total : 0;
+  res.json({ prefix, total, facets: rows.map(({ total: _t, ...f }) => f), limit, offset });
+});
+
 app.get('/api/stats', (req, res) => {
   const rows = store.readCounts().map((r) => ({
     date: r.date, domain: r.domain, type: r.type, n: r.n, bot: toBotField(r.client),
@@ -192,7 +223,6 @@ app.get('/api/stats', (req, res) => {
     durationBucketBoundaries: store.DURATION_BUCKETS_MS,
     instanceBytes: store.readInstanceBytes(),
     duplicates: store.readUrlSeenSummary(),
-    routePatterns: store.readRoutePatterns(),
     cacheStats: store.readCacheStats(),
     recentErrors,
     recentSoftErrors,

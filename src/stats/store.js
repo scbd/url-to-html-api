@@ -320,8 +320,56 @@ function incrementRoutePattern(domain, pattern) {
   upsertRoutePattern.run(day, domain || 'unknown', pattern);
 }
 
-function readRoutePatterns() {
-  return db.prepare('SELECT day AS date, domain, pattern, n FROM route_patterns').all();
+// route_patterns is unbounded (every unnormalized slug/junk path is its own row), so
+// it's aggregated and capped in SQL rather than shipped whole — the dashboard only
+// shows the hottest few for the selected day range and domain.
+function readTopRoutePatterns({ from, to, domain, limit = 8, offset = 0 }) {
+  return db.prepare(`
+    SELECT pattern, SUM(n) AS n
+    FROM route_patterns
+    WHERE day >= ? AND day <= ? AND (? IS NULL OR domain = ?)
+    GROUP BY pattern
+    ORDER BY n DESC
+    LIMIT ? OFFSET ?
+  `).all(from, to, domain || null, domain || null, limit, offset);
+}
+
+// One level of a path-prefix drill-down over route_patterns: groups every stored
+// pattern under `prefix` by its next path segment, so the unbounded tail can be read
+// as structure ("/database has 80k distinct patterns") instead of as rows. Computed in
+// SQL so the table is never shipped. `prefix` is '' for the root, else e.g. '/database'.
+function readRouteFacets({ from, to, domain, prefix = '', limit = 50, offset = 0 }) {
+  return db.prepare(`
+    WITH agg AS (
+      SELECT pattern, SUM(n) AS n
+      FROM route_patterns
+      WHERE day >= ? AND day <= ? AND (? IS NULL OR domain = ?)
+      GROUP BY pattern
+    ),
+    under AS (
+      SELECT n, substr(pattern, length(?) + 2) AS r
+      FROM agg
+      WHERE substr(pattern, 1, length(?)) = ? AND substr(pattern, length(?) + 1, 1) = '/'
+    ),
+    segs AS (
+      SELECT n, r,
+        CASE
+          WHEN instr(r, '/') > 0 AND (instr(r, '?') = 0 OR instr(r, '/') < instr(r, '?')) THEN substr(r, 1, instr(r, '/') - 1)
+          WHEN instr(r, '?') > 0 THEN substr(r, 1, instr(r, '?') - 1)
+          ELSE r
+        END AS seg
+      FROM under
+    )
+    SELECT seg AS segment,
+           COUNT(*) AS distinctPatterns,
+           SUM(n) AS hits,
+           SUM(CASE WHEN substr(r, length(seg) + 1, 1) = '/' THEN 1 ELSE 0 END) AS deeper,
+           COUNT(*) OVER () AS total
+    FROM segs
+    GROUP BY seg
+    ORDER BY hits DESC
+    LIMIT ? OFFSET ?
+  `).all(from, to, domain || null, domain || null, prefix, prefix, prefix, prefix, limit, offset);
 }
 
 function pruneOldRoutePatterns() {
@@ -422,7 +470,8 @@ module.exports = {
   readUrlSeenSummary,
   pruneOldUrlSeen,
   incrementRoutePattern,
-  readRoutePatterns,
+  readTopRoutePatterns,
+  readRouteFacets,
   pruneOldRoutePatterns,
   recordCacheCount,
   readCacheStats,
